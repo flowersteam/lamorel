@@ -1,7 +1,7 @@
 # Language Models for Reinforcement Learning - *Lamorel*
 
 *Lamorel* is a Python library designed for RL practitioners eager to use Large Language Models (LLMs).
-It is more generally built to use LLMs at scale in interactive environments. It relies on a client-server architecture where your RL script acts as the client sending request to the LLM server. In order to match the computation requirements of RL, *Lamorel* can deploy multiple LLM servers and dispatch the requests on them without any modification in your code.
+It is more generally built to use LLMs at scale in interactive environments. It relies on a client-server(s) architecture where your RL script acts as the client sending requests to the LLM server(s). In order to match the computation requirements of RL, *Lamorel* can deploy multiple LLM servers and dispatch the requests on them without any modification in your code.
 ![Distributed scoring](docs/images/distributed_architecture.gif)
 
 ## Why *Lamorel*?
@@ -10,8 +10,8 @@ It is more generally built to use LLMs at scale in interactive environments. It 
 lm_server.generate(contexts=["This is an examples prompt, continue it with"])
 lm_server.score(contexts=["This is an examples prompt, continue it with"], candidates=["a sentence", "another sentence"])
 ```
-2. Provides a method to compute the probability of token sequences (e.g. action commands) given a prompt along with optimization (e.g. prompt is encoded only once when using Encode-Decoder architectures)
-3. Is made for scaling up your experiments by deploying multiple instances of the LLM and dispatching the computation through a simple configuration file
+2. Provides a method to compute the probability of token sequences (e.g. action commands) given a prompt
+3. Is made for scaling up your experiments by deploying multiple instances of the LLM and dispatching the computation thanks to a simple configuration file
 ```yaml
   distributed_setup_args:
     n_rl_processes: 1
@@ -25,10 +25,10 @@ lm_server.score(contexts=["This is an examples prompt, continue it with"], candi
     pretrained: true
     minibatch_size: 4
     parallelism:
-      use_gpu: false
-      model_parallelism_size: 1
+      use_gpu: true
+      model_parallelism_size: 2
 ```
-5. Allows one to give their own PyTorch modules to compute (e.g. to add new heads on top of the LLM)
+5. Allows one to give their own PyTorch modules to compute custom operations (e.g. to add new heads on top of the LLM)
 6. Allows one to train the LLM (or part of it) thanks to a [Data Parallelism](https://pytorch.org/tutorials/intermediate/ddp_tutorial.html) setup where the user provides its own update method 
 
 
@@ -45,7 +45,7 @@ lm_server.score(contexts=["This is an examples prompt, continue it with"], candi
 ### Instantiating the server in your RL script
 *Lamorel* leverages [hydra](https://hydra.cc/) for its configuration file. Because of this, you need to add the hydra decorator on top of your `main` function.
 Then, you must instantiate the `Caller` class from *Lamorel* which will create the object allowing you to interact with the LLM servers.
-Do not forget to initialize *Lamorel* once imported with `lamorel_init()` to initialize the communication with the server. 
+Do not forget to initialize *Lamorel* once imported with `lamorel_init()` to initialize the communication with the servers. 
 ```python
 import hydra
 from lamorel import Caller, lamorel_init
@@ -61,11 +61,11 @@ if __name__ == '__main__':
 ```
 Do not forget to close the connection with servers at the end of your script.
 
-### Using the server
-Once instantiated, you can use the different methods of the `Caller` object to send requests to your LLMs. We detail below the different methods.
+### Using the Caller
+Once instantiated, you can use the different methods of the `Caller` object to send requests to your LLMs.
 
 #### Scoring
-First, we provide the `score` method allowing one to compute the probability of a sequence of tokens (a `candidate`) given a prompt (`context`).
+First, we provide the `score` method to compute the probability of a sequence of tokens (a `candidate`) given a prompt (`context`).
 *Lamorel* allows to provide multiple candidates for a single context but also to batch this computation for multiple contexts (along with their associated candidates). Using this, one can use a classic vectorized RL setup where at each step, multiple environments running in parallel return their current state and expect an action. 
 ```python
 lm_server.score(contexts=["This is an examples prompt, continue it with"], 
@@ -73,8 +73,8 @@ lm_server.score(contexts=["This is an examples prompt, continue it with"],
 ```
 
 #### Generation
-*Lamorel* also provides a method for text generation. Similarly to the `score` method, one can provide multiple prompts (`contexts`).
-Our `generate` method can expect any keyword argument from [Transformers API](https://huggingface.co/docs/transformers/main_classes/text_generation).
+*Lamorel* also provides a method for text generation. Similarly to the `score` method, one can give multiple prompts (`contexts`).
+Our `generate` method can use any keyword argument from [Transformers API](https://huggingface.co/docs/transformers/main_classes/text_generation).
 In addition of the generated texts, it also returns the probability of each generated sequence.
 
 ```python
@@ -156,12 +156,8 @@ lm_server.score(additional_module_function_keys=['mlp_head'],
 
 #### Updaters
 
-We have seen so far how to use an LLM (along with possibly custom modules) for inference. However, *Lamorel* also provides tools to update (e.g. train) these operations.
-We provide a `BaseUpdater` class which can be extended and perform any update operation. Our class gives access to:
-- the forward operation of our LLM `self._llm_module()` (used by `score` and any custom module) but with gradient possibly activated
-- all operations in the computational graph: the LLM itself `self._llm_module._LLM_model`, custom modules `self._llm_module.module._module_functions`, the whole graph `self._llm_module`
-
-As given by example below, users can define their own loss and train all the weights or part of it.
+We have seen so far how to use an LLM (along with possibly custom modules) for inference. However, *Lamorel* also provides tools to update (e.g. train) these operations with a `BaseUpdater` class which can be extended and perform any update operation. Our class gives access to the whole computation graph `self._llm_module`.
+It can for instance be used to perform operations with gradient by calling `self._llm_module(['mlp_head', '__score'], ...)` with the leaf operations wanted (i.e. scoring and/or custom modules) or to select weights to train (the LLM itself `self._llm_module._LLM_model`, custom modules `self._llm_module.module._module_functions`, the whole graph `self._llm_module`).
 
 ```python
 from lamorel import BaseUpdater
@@ -206,10 +202,10 @@ class TestUpdater(BaseUpdater):
         return {"loss": loss}
 ```
 
-Once defined, users must give their custom Updater to the caller. 
+Once defined, users must give their custom Updater to the Caller. 
 
 Whenever needed, users can call their Updater with data (i.e. contexts and candidates) along with any additional keyword argument (e.g. labels).
-Because multiple LLM servers can be deployed, we also dispatch the Updater's computation. When one calls the updater with data, contexts and candidates are dispatched over the multiple servers (where each runs the Updater). 
+Because multiple LLM servers can be deployed, we also dispatch the Updater's computation. When one calls the Updater with data, contexts and candidates are dispatched over the multiple servers (where each runs the Updater). 
 Because *Lamorel* does not know a priori what additional keyword arguments are, these are copied and sent to each LLM. As users may need to know how to associate these arguments to the data handled by the current server,
 we provide the `_current_batch_ids` variable giving the indexes of contexts (and by extension candidates) that are given to the current LLM. 
 
@@ -301,14 +297,14 @@ The two other machines both host only 2 LLM servers.
 We provide an [example_script](examples/agent_scienceworld.py) with a simple loop running a LLM agent in a non-vectorized version of [ScienceWorld](https://github.com/allenai/ScienceWorld).
 
 ## Technical details and contributions
-*Lamorel* relies on Pytorch distributed for communications. We chose to rely on the GLOO backend to allow both CPU and GPU communications.
+*Lamorel* relies on Pytorch distributed for communications. We chose to use the GLOO backend to allow both CPU and GPU platforms.
 *Lamorel* launches the RL script `n_rl_processes` + `n_llm_processes` times. Every time it reaches the `lm_server = Caller(...)` line, *Lamorel* checks whether the current process should be part of the client or the LLM servers.
 
 If it is a client, the script returns the `Caller` object (that the user can use to send requests) and continues.
 
 Otherwise, it creates a [`Server`](lamorel/src/lamorel/server/server.py) that loads the LLM and starts listening.
 For the communication between the client and servers, we create a process group between the client and one of the servers which is considered as the master.
-This master server listen to requests and dispatches calls (using the [`Dispatcher`](lamorel/src/lamorel/server/dispatcher.py)) to all the servers using another process group (only shared by LLM servers).
-Each LLM server performs the asked operations on its received data and sends the result to the master LLM server. The latter gathers results and sends them back to the RL script.
+This master server listens to requests and dispatches calls (using the [`Dispatcher`](lamorel/src/lamorel/server/dispatcher.py)) to all the servers using another process group (only shared by LLM servers).
+Each LLM server performs the asked operations on its received data and sends the results to the master LLM server. The latter gathers results and sends them back to the RL script.
 
 *Lamorel* is still in its very early phase and we are happy to accept any external contribution to it. Please follow the [CONTRIBUTING.md](CONTRIBUTINg.md) file.
