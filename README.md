@@ -1,10 +1,19 @@
 # Language Models for Reinforcement Learning - *Lamorel*
 
-*Lamorel* is a Python library designed for RL practitioners eager to use Large Language Models (LLMs).
-It is more generally built to use LLMs at scale in interactive environments. It relies on a client-server(s) architecture where your RL script acts as the client sending requests to the LLM server(s). In order to match the computation requirements of RL, *Lamorel* can deploy multiple LLM servers and dispatch the requests on them without any modification in your code.
-![Distributed scoring](docs/images/distributed_architecture.gif)
+*Lamorel* is a Python library designed for people eager to use Large Language Models (LLMs) in interactive environments (e.g. RL setups).
 
 ## Why *Lamorel*?
+### What is the difference between *Lamorel* and RLHF libs?
+First of all, *Lamorel* was initially designed to easily use LLMs in interactive environments. For this reason, it is not specialised in RL. However, one can easily implement an RL loop as provided in [examples](examples).
+
+A key component of RLHF is that generating a sequence of tokens given a prompt is considered as a full (and terminated) episode. Steps are therefore the generation of each token in the generated sequence.
+This method is for instance useful to finetune LLMs to generate token sequences that maximize a reward function (e.g. learned from interactions with humans).
+However, this setup is not suited for interacting with an external environment that requires multiple interactions (e.g. multiple text generations) to end an episode. 
+
+This is why we advise users that lie in the RLHF setup and do not want to reimplement the RL loop by themselves to use such libs that already come with RL implementations (e.g. [RL4LMs](https://github.com/allenai/RL4LMs), [TRL](https://github.com/lvwerra/trl)).
+On the opposite, if you want to use your LLM in an interactive environment where acting in the environment leads your agent to a new state (and possibly a new prompt for your LLM) that is still part of the same episode, *Lamorel* may help you.
+
+### *Lamorel*'s key features
 1. Abstracts the use of LLMs (e.g. tonekization, batches) into simple calls
 ```python
 lm_server.generate(contexts=["This is an examples prompt, continue it with"])
@@ -31,10 +40,18 @@ lm_server.score(contexts=["This is an examples prompt, continue it with"], candi
 5. Allows one to give their own PyTorch modules to compute custom operations (e.g. to add new heads on top of the LLM)
 6. Allows one to train the LLM (or part of it) thanks to a [Data Parallelism](https://pytorch.org/tutorials/intermediate/ddp_tutorial.html) setup where the user provides its own update method 
 
+### Distributed and scalable
+*Lamorel* relies on a client-server(s) architecture where your RL script acts as the client sending requests to the LLM server(s). In order to match the computation requirements of RL, *Lamorel* can deploy multiple LLM servers and dispatch the requests on them without any modification in your code.
+![Distributed scoring](docs/images/distributed_architecture.gif) 
 
 ## Installation
 1. `cd lamorel`
 2. `pip install .`
+
+## Examples
+We provide a set of [examples](examples)  that use *Lamorel* in interactive environments:
+- [**SayCan**](examples/SayCan): A [SayCan](https://arxiv.org/abs/2204.01691) implementation that controls a robot hand in a simulated PickPlace environment.
+- [**PPO_finetuning**](examples/PPO_finetuning): A lightweight implementation of the PPO approach introduced in ["Grounding Large Language Models in Interactive Environments with Online Reinforcement Learning"](https://arxiv.org/abs/2302.02662) to finetune an LLM policy in [BabyAI-Text](https://github.com/flowersteam/Grounding_LLMs_with_online_RL/tree/main/babyai-text).
 
 ## How to use *Lamorel*
 *Lamorel* is built of three main components:
@@ -293,9 +310,6 @@ The two other machines both host only 2 LLM servers.
     - ```shell
         sbatch examples/slurm/job.slurm
       ```
-
-### Example scripts
-We provide an [example_script](examples/agent_scienceworld.py) with a simple loop running a LLM agent in a non-vectorized version of [ScienceWorld](https://github.com/allenai/ScienceWorld).
 
 ## Technical details and contributions
 *Lamorel* relies on Pytorch distributed for communications. We chose to use the GLOO backend to allow both CPU and GPU platforms.
