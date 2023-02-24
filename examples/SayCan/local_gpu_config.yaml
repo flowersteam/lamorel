@@ -1,0 +1,28 @@
+lamorel_args:
+  log_level: info
+  allow_subgraph_use_whith_gradient: false
+  distributed_setup_args:
+    n_rl_processes: 1
+    n_llm_processes: 1
+  accelerate_args:
+    config_file: ../configs/accelerate/default_config.yaml
+    machine_rank: 0
+    num_machines: 2
+  llm_args:
+    model_type: seq2seq
+    model_path: t5-small
+    pretrained: true
+    minibatch_size: 4
+    parallelism:
+      use_gpu: false
+      model_parallelism_size: 1
+      synchronize_gpus_after_scoring: false
+      empty_cuda_cache_after_scoring: false
+  updater_args:
+rl_script_args:
+  path: ???
+  use_env_description: true
+  n_tasks: 5
+  termination_str: "done()"
+  plot_saycan: false
+  use_actions_in_env: false

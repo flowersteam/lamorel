@@ -1,0 +1,38 @@
+lamorel_args:
+  log_level: info
+  allow_subgraph_use_whith_gradient: false
+  distributed_setup_args:
+    n_rl_processes: 1
+    n_llm_processes: 1
+  accelerate_args:
+    config_file: ../configs/accelerate/default_config.yaml
+    machine_rank: 0
+    num_machines: 2
+  llm_args:
+    model_type: seq2seq
+    model_path: t5-small
+    pretrained: true
+    minibatch_size: 4
+    parallelism:
+      use_gpu: false
+      model_parallelism_size: 1
+      synchronize_gpus_after_scoring: false
+      empty_cuda_cache_after_scoring: false
+  updater_args:
+rl_script_args:
+  path: ???
+  name_environment: 'BabyAI-GoToRedBall-v0'
+  epochs: 50
+  steps_per_epoch: 64
+  ppo_epochs: 4
+  lam: 0.99
+  gamma: 0.99
+  clip_ration: 0.2
+  target_kl: 0.01
+  max_ep_len: 1000
+  lr: 1e-6
+  entropy_coef: 0.01
+  value_loss_coef: 0.5
+  clip_eps: 0.2
+  save_freq: 10
+  output_dir: ???
