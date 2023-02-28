@@ -18,7 +18,6 @@ lamorel_args:
       model_parallelism_size: 1
       synchronize_gpus_after_scoring: false
       empty_cuda_cache_after_scoring: false
-  updater_args:
 rl_script_args:
   path: ???
   use_env_description: true

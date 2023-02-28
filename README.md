@@ -219,7 +219,7 @@ class TestUpdater(BaseUpdater):
         return {"loss": loss}
 ```
 
-Once defined, users must give their custom Updater to the Caller. Note that Updater's constructor can take keyword arguments using config files (see next section).
+Once defined, users must give their custom Updater to the Caller.
 
 Whenever needed, users can call their Updater with data (i.e. contexts and candidates) along with any additional keyword argument (e.g. labels).
 Because multiple LLM servers can be deployed, we also dispatch the Updater's computation. When one calls the Updater with data, contexts and candidates are dispatched over the multiple servers (where each runs the Updater). 
@@ -232,7 +232,7 @@ lm_server = Caller(config_args.lamorel_args,
                    custom_module_functions={
                        'mlp_head': TwoLayersMLPModuleFn(config_args.lamorel_args.llm_args.model_type, 2)
                    },
-                   custom_updater_class=TestUpdater)
+                   custom_updater=TestUpdater())
 
 result = lm_server.update(
             contexts=["This is an examples prompt, continue it with"],
@@ -268,7 +268,6 @@ lamorel_args: # Arguments for Lamorel
       model_parallelism_size: 1 # number of GPUs user per LLM server
       synchronize_gpus_after_scoring: false # only useful for specific GPU optimizations
       empty_cuda_cache_after_scoring: false # only useful for specific GPU optimizations
-  updater_args: # add here args you would like to give to your Updater's constructor
 rl_script_args: # Arguments for Lamorel
   path: ??? # absolute path to your RL script 
   # Provide any additional arguments for your RL script here

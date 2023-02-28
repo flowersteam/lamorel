@@ -15,7 +15,7 @@ class Caller:
     It will instantiate the different distributed groups.
     If the current process belongs to the LLM's processes, it will launch the LLM and wait for requests.
     '''
-    def __init__(self, config, custom_updater_class=None, custom_module_functions={}):
+    def __init__(self, config, custom_updaters=None, custom_module_functions={}):
         assert dist.is_initialized(), "torch distributed must be used!"
         self.__config = config
         self.__grad_fn_model = None
@@ -58,7 +58,7 @@ class Caller:
                 self._llm_master_process,
                 self._rl_llm_group,
                 len(rl_processes) + 1,
-                custom_updater_class,
+                custom_updaters,
                 custom_module_functions
             )
 
