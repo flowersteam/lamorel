@@ -107,7 +107,7 @@ We expect these custom methods to be [PyTorch modules](https://pytorch.org/docs/
 In order to define such a custom operation, users must extend our `BaseModuleFunction` class.
 For this, you must extend two main methods:
 - `initialize(self)`: initialize your custom operations here.
-- `forward(self, forward_outputs, minibatch, tokenized_context, **kwargs)`: perform your operations here and return the results.
+- `forward(self, forward_outputs, minibatch, tokenized_contexts, **kwargs)`: perform your operations here and return the results.
 
 *Lamorel* will give your custom module to all LLM servers and ensure your variables (e.g. weights) are the same on each server. 
 See the example below where we implement a Multi Layer Perceptron (MLP) on top of our LLM.
@@ -134,7 +134,7 @@ class TwoLayersMLPModuleFn(BaseModuleFunction):
             torch.nn.Linear(128, self._n_outputs),
         ).to(self.device)
 
-    def forward(self, forward_outputs, minibatch, tokenized_context, **kwargs):
+    def forward(self, forward_outputs, minibatch, tokenized_contexts, **kwargs):
         '''
         Perform your operations here.
         - forward_outputs gives access the output of the computations performed by the LLM (e.g. representations of each layer)
@@ -143,9 +143,9 @@ class TwoLayersMLPModuleFn(BaseModuleFunction):
         '''
         # Get the last layer's representation from the token right after the prompt
         if self._model_type == "causal": # adapt to the Transformers API differing between Encoder-Decoder and Decoder-only models
-            model_head = forward_outputs['hidden_states'][0][0, len(tokenized_context["input_ids"])-1, :]
+            model_head = forward_outputs['hidden_states'][0][0, len(tokenized_contexts["input_ids"])-1, :]
         else:
-            model_head = forward_outputs['encoder_last_hidden_state'][0, len(tokenized_context["input_ids"]) - 1, :]
+            model_head = forward_outputs['encoder_last_hidden_state'][0, len(tokenized_contexts["input_ids"]) - 1, :]
         
         # Give representation to our MLP
         output = self.mlp(model_head)
@@ -244,6 +244,24 @@ losses = [r["loss"] for r in result] # one loss returned per LLM
 
 ![Training](docs/images/training.gif)
 
+#### Initializers
+Additionally, one may also provide an `Initializer` object applying any modification on the model (e.g. freezing some weights) before it is given to the distributed architecture that synchronizes all LLMs.
+
+```python
+from lamorel import BaseModelInitializer
+class CustomInitializer(BaseModelInitializer):
+    def initialize_model(self, model):
+        # Do whatevever your want here
+        # For instance, freeze all the LLM's weights
+        llm_module = model._modules['_LLM_model']
+        for param in llm_module.parameters():
+                param.requires_grad = False
+
+
+lm_server = Caller(config_args.lamorel_args,
+                   custom_model_initializer=CustomInitializer())
+```
+
 ### Setting up the configuration
 The configuration of the LLM and the client-server(s) architecture is done using a YAML configuration file following [hydra](https://hydra.cc/)'s API.
 Here is what this file should contain:
@@ -262,7 +280,8 @@ lamorel_args: # Arguments for Lamorel
     model_type: seq2seq # (seq2seq, causal): Encoder-Decoder or Decoder-Only model
     model_path: t5-small # name (if downloaded from the Hugging Face's hub) or (absolute) path to the model
     pretrained: true # (true, false): set this to false if you want to keep the LLM's architecture but re-initialize its wegihts
-    minibatch_size: 4 # number of candidates to batch per forward, adapt this number to your GPU memory
+    pre_encode_inputs: true # whether encoding contexts should be optimized when using Encoder-Decoder models
+    minibatch_size: 4 # batch size per forward passes, adapt this number to your GPU memory
     parallelism: # Model parallelism
       use_gpu: true # (true, false) set this to false if you want your LLM(s) to use CPU
       model_parallelism_size: 1 # number of GPUs user per LLM server

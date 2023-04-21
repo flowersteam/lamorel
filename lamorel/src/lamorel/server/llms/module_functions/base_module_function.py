@@ -13,5 +13,5 @@ class BaseModuleFunction(Module):
         '''
         raise NotImplementedError()
 
-    def forward(self, forward_outputs, minibatch, tokenized_context,  **kwargs):
+    def forward(self, forward_outputs, minibatch, tokenized_contexts,  **kwargs):
         raise NotImplementedError()
