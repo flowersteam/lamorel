@@ -103,7 +103,7 @@ def main(config_args):
 
     # Create LLM agent
     lm_server = Caller(config_args.lamorel_args,
-                       custom_updater_class=PPOUpdater,
+                       custom_updater=PPOUpdater(),
                        custom_module_functions={
                             'value': ValueHeadModuleFn(config_args.lamorel_args.llm_args.model_type)
                         })
