@@ -56,7 +56,7 @@ class Server:
             self._updater = custom_updater
             self._updater.set_llm_module(
                 DDP(self._model, process_group=self._llm_group,
-                    find_unused_parameters=not config.allow_subgraph_use_whith_gradient),
+                    find_unused_parameters=config.allow_subgraph_use_whith_gradient),
             )
             assert isinstance(self._updater, BaseUpdater)
         else:
