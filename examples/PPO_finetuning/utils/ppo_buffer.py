@@ -77,7 +77,7 @@ class PPOBuffer:
         adv_mean, adv_std = np.mean(self.adv_buf), np.std(self.adv_buf)
         self.adv_buf = (self.adv_buf - adv_mean) / adv_std
         data = dict(obs=self.obs_buf, act=self.act_buf, ret=self.ret_buf,
-                    adv=self.adv_buf, logp=self.logp_buf)
+                    adv=self.adv_buf, logp=self.logp_buf, val=self.val_buf)
         return {
             k: torch.as_tensor(v, dtype=torch.float32)
             if not isinstance(v, list) else v

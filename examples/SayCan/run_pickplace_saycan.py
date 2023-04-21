@@ -115,6 +115,8 @@ def main(config_args):
         print(f"Plan for task {i}:\n" +
               "\n ".join(["{}. {}".format(_idx + 1, _action) for _idx, _action in enumerate(actions)]))
 
+    lm_server.close()
+
 if __name__ == '__main__':
     main()
 

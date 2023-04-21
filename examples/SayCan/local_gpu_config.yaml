@@ -12,9 +12,10 @@ lamorel_args:
     model_type: seq2seq
     model_path: t5-small
     pretrained: true
-    minibatch_size: 4
+    minibatch_size: 192
+    pre_encode_inputs: true
     parallelism:
-      use_gpu: false
+      use_gpu: true
       model_parallelism_size: 1
       synchronize_gpus_after_scoring: false
       empty_cuda_cache_after_scoring: false
