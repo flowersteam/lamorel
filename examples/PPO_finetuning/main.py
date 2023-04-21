@@ -290,5 +290,7 @@ def main(config_args):
     with open(config_args.rl_script_args.output_dir + "/history.pkl", "wb") as file:
         pickle.dump(history, file)
 
+    lm_server.close()
+
 if __name__ == '__main__':
     main()
