@@ -27,14 +27,3 @@ def discount_cumsum(x, discount):
          x2]
     """
     return scipy.signal.lfilter([1], [1, float(-discount)], x[::-1], axis=0)[::-1]
-
-def scores_to_proba_dists(scores):
-    proba_dists = []
-    scores_max = torch.max(scores, dim=1)[0]
-    for j in range(len(scores)):
-        proba_dists.append(F.softmax(scores[j] / scores_max[j], dim=-1).unsqueeze(dim=0))
-
-    proba_dists = torch.cat(proba_dists)
-    dists = Categorical(probs=proba_dists)
-
-    return dists
