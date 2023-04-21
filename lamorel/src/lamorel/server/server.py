@@ -18,7 +18,7 @@ accelerator = Accelerator()
 
 class Server:
     def __init__(self, config, llm_index, llm_group, llm_master, rl_llm_group, rl_llm_group_size, custom_updater,
-                 custom_module_functions):
+                 custom_module_functions, custom_model_initializer):
         assert dist.is_initialized(), "torch distributed must be used!"
         self._index = llm_index  # index of current process in the list of llm processes
         self._master_server_rank = llm_master
@@ -48,6 +48,9 @@ class Server:
             _fn.llm_config = self._model.get_model_config()
             _fn.initialize()
         self._model.register_module_functions(custom_module_functions)
+
+        if custom_model_initializer is not None:
+            self._model = custom_model_initializer.initialize_model(self._model)
 
         if custom_updater is not None:
             self._updater = custom_updater

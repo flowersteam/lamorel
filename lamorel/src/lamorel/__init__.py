@@ -5,3 +5,4 @@ from .init_distributed_setup import init_distributed_setup as lamorel_init
 from .caller import Caller
 from .server.llms.updaters import BaseUpdater
 from .server.llms.module_functions import BaseModuleFunction
+from .server.llms.model_initializers import BaseModelInitializer
