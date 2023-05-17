@@ -140,7 +140,7 @@ class HF_LLM(BaseLLM):
         input_batch = {}
         for key, value in input.items():
             input_batch[key] = torch.tensor(value, device=self.device)
-        return self._LLM_model.encoder(**input_batch, return_dict=False)[0]
+        return self._LLM_model.encoder(**input_batch, return_dict=False)[0].to(self.device)
 
     def generate(self, contexts, **kwargs):
         generations = []
