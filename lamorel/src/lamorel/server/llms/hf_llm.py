@@ -201,7 +201,7 @@ class HF_LLM(BaseLLM):
                 f"Preparing to process {len(batch_inputs)} examples with a batch size of {_minibatch_size}...")
             if self.__input_encoder is not None:
                 batch_input_representations = []
-                for step in range(max(len(contexts) // _minibatch_size, 1)):
+                for step in range(len(contexts) // _minibatch_size + 1):
                     _input = {}
                     for _i in range(step*_minibatch_size, min((step+1)*_minibatch_size, len(contexts))):
                         if len(_ids_tables[_i]) == 0: break
