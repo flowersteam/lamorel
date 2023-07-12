@@ -8,16 +8,19 @@ from utils.generate_prompt import generate_prompt
 import torch
 import numpy as np
 
+from peft import LoraConfig, get_peft_model
+
 from tqdm import tqdm
 import time
 import pickle
+import math
 import os
 
 import gym
 import babyai_text
 
 from lamorel import Caller, lamorel_init
-from lamorel import BaseUpdater, BaseModuleFunction
+from lamorel import BaseUpdater, BaseModuleFunction, BaseModelInitializer
 
 lamorel_init()
 
@@ -31,8 +34,8 @@ class LogScoringModuleFn(BaseModuleFunction):
         pass
 
     def forward(self, forward_outputs, minibatch, tokenized_contexts, **kwargs):
-        if self._model_type == "causal":
-            raise NotImplementedError() # TODO
+        if self._model_type == "causal":  # hence input should be removed from result
+            raise NotImplementedError()
         else:
             logits = forward_outputs["logits"][:, :-1, :]  # skip </s> token appended by tokenizer
             output_tokens = minibatch["decoder_input_ids"][:, 1:]  # skip pad token
@@ -75,17 +78,90 @@ class ValueHeadModuleFn(BaseModuleFunction):
         value = self.value_head_op(model_head.to(torch.float32).to(self.device))
         return value.cpu()
 
-class PPOUpdater(BaseUpdater):
+class PeftInitializer(BaseModelInitializer):
+    def __init__(self, model_type, use_lora, use_fp16):
+        super().__init__()
+        self._model_type = model_type
+        self._use_lora = use_lora
+        self._use_fp16 = use_fp16
+
+    def _print_trainable_parameters(self, model):
+        """
+        Prints the number of trainable parameters in the model.
+        """
+        trainable_params = 0
+        all_param = 0
+        for _, param in model.named_parameters():
+            all_param += param.numel()
+            if param.requires_grad:
+                trainable_params += param.numel()
+        print(
+            f"trainable params: {trainable_params} || all params: {all_param} || trainable%: {100 * trainable_params / all_param}"
+        )
+
+    def initialize_model(self, model):
+        if self._use_lora:
+            llm_module = model._modules['_LLM_model']
+
+            if self._use_fp16:
+                llm_module.half()
+
+            llm_module.gradient_checkpointing_enable()  # reduce number of stored activations
+            llm_module.enable_input_require_grads()
+
+            # Init adapters
+            config = LoraConfig(
+                r=16,
+                lora_alpha=32,
+                target_modules=["q", "v"] if self._model_type == "seq2seq" else ["q_proj", "v_proj"],
+                lora_dropout=0.0,
+                bias="none",
+                task_type="SEQ_2_SEQ_LM" if self._model_type == "seq2seq" else "CAUSAL_LM"
+            )
+            peft_model = get_peft_model(llm_module, config)
+            parent_module_device = None
+            for name, param in peft_model.named_modules():
+                if name.split(".")[-1].startswith("lora_"):
+                    if hasattr(param, "weight"):
+                        param.to(parent_module_device)
+                else:
+                    if hasattr(param, "weight"):
+                        parent_module_device = param.weight.device
+                    else:
+                        parent_module_device = None
+            model._modules['_LLM_model'] = peft_model
+
+        model.eval()  # Important to ensure ratios are 1 in first minibatch of PPO (i.e. no dropout)
+        self._print_trainable_parameters(model)
+        return model
+
+class PPOLoRAUpdater(BaseUpdater):
     def __init__(self, model_type, minibatch_size, gradient_batch_size):
-        super(PPOUpdater, self).__init__()
+        super(PPOLoRAUpdater, self).__init__()
         self._model_type = model_type
         self._minibatch_size = minibatch_size
         self._gradient_batch_size = gradient_batch_size
 
+    def _get_memory_allocated(self):
+        return math.floor(torch.cuda.memory_allocated() / 1024 / 1024)
+
     def perform_update(self, contexts, candidates, _current_batch_ids, **kwargs):
+        times = {
+            "forward": [],
+            "backward": [],
+            "optim": []
+        }
+
+        gpu_usage = {
+            "forward": [],
+            "backward": [],
+            "optim": []
+        }
+
         iterator_trainable_params = self._llm_module.parameters()
         if not hasattr(self, 'optimizer'):
             self.optimizer = torch.optim.Adam(iterator_trainable_params, kwargs["lr"])
+            gpu_usage["init_optim"] = self._get_memory_allocated()
 
         current_process_buffer = {}
         for k in ['actions', 'advantages', 'returns', 'logprobs', 'values']:
@@ -93,6 +169,7 @@ class PPOUpdater(BaseUpdater):
 
         longest_candidate = max([len(_c) for _c in candidates])
         _batch_size = self._gradient_batch_size
+        _full_time = time.time()
         for i in tqdm(range(kwargs["ppo_epochs"]), ascii=" " * 9 + ">", ncols=100):
             for step in range(len(contexts) // self._minibatch_size + 1):
                 if step * self._minibatch_size >= len(contexts):
@@ -109,8 +186,11 @@ class PPOUpdater(BaseUpdater):
                     _candidates = candidates[_start_idx:_stop_idx]
                     if len(_contexts) == 0: break
                     # Use LLM to compute again action probabilities and value
+                    _time = time.time()
                     output = self._llm_module(['score', 'value'], contexts=_contexts, candidates=_candidates,
                                               require_grad=True, minibatch_size=_batch_size * longest_candidate)
+                    times["forward"].append(time.time() - _time)
+                    gpu_usage["forward"].append(self._get_memory_allocated())
                     scores = torch.stack([_o['score'] for _o in output]).squeeze()
                     probas = torch.distributions.Categorical(logits=scores)
                     values = torch.stack([_o["value"][0] for _o in output]).squeeze()
@@ -134,16 +214,24 @@ class PPOUpdater(BaseUpdater):
                     loss = policy_loss - kwargs["entropy_coef"] * entropy + kwargs["value_loss_coef"] * value_loss
 
                     # Backward
+                    _time = time.time()
                     loss.backward()
+                    times["backward"].append(time.time() - _time)
+                    gpu_usage["backward"].append(self._get_memory_allocated())
+                _time = time.time()
                 torch.nn.utils.clip_grad_norm_(iterator_trainable_params, kwargs["max_grad_norm"])
                 self.optimizer.step()
+                times["optim"].append(time.time() - _time)
+                gpu_usage["optim"].append(self._get_memory_allocated())
+
+        times["full_update"] = time.time() - _full_time
 
         if kwargs["save_after_update"]:
             print("Saving model...")
             torch.save(self._llm_module.state_dict(), kwargs["output_dir"] + "/model.checkpoint")
             print("Model saved")
 
-        return {'loss': loss, 'value_loss': value_loss, 'policy_loss': policy_loss}
+        return {'loss': loss, 'value_loss': value_loss, 'policy_loss': policy_loss, 'times': times, 'gpu_usage': gpu_usage}
 
 
 
@@ -162,9 +250,12 @@ def main(config_args):
 
     # Create LLM agent
     lm_server = Caller(config_args.lamorel_args,
-                       custom_updater=PPOUpdater(config_args.lamorel_args.llm_args.model_type,
+                       custom_updater=PPOLoRAUpdater(config_args.lamorel_args.llm_args.model_type,
                                                      config_args.rl_script_args.minibatch_size,
                                                      config_args.rl_script_args.gradient_batch_size),
+                       custom_model_initializer=PeftInitializer(config_args.lamorel_args.llm_args.model_type,
+                                                                config_args.rl_script_args.use_lora,
+                                                                config_args.rl_script_args.use_fp16),
                        custom_module_functions={
                             'score': LogScoringModuleFn(config_args.lamorel_args.llm_args.model_type),
                             'value': ValueHeadModuleFn(config_args.lamorel_args.llm_args.model_type)
@@ -191,9 +282,13 @@ def main(config_args):
         "value_loss": [],
         "actions": [],
         "prompts": [],
+        "training_times": [],
+        "collection_times": [],
+        "training_gpu_usage": []
     }
 
     for epoch in range(config_args.rl_script_args.epochs):
+        __time = time.time()
         for t in range(config_args.rl_script_args.steps_per_epoch):
             prompt = generate_prompt(o)
             output = lm_server.custom_module_fns(['score', 'value'],
@@ -252,6 +347,7 @@ def main(config_args):
                         "descriptions": _infos["descriptions"]
                     }
 
+        history["collection_times"].append(time.time() - __time)
         # Perform PPO update!
         print(f"PPO update number {epoch + 1}")
         save_model = (epoch % config_args.rl_script_args.save_freq == 0 or
@@ -280,6 +376,8 @@ def main(config_args):
         history["value_loss"].append(avg_value_loss)
         history["actions"].append([actions[int(_a.item())] for _a in collected_trajectories['act']])
         history["prompts"].append(collected_trajectories['obs'])
+        history["training_times"].append([r["times"] for r in update_results])
+        history["training_gpu_usage"].append([r["gpu_usage"] for r in update_results])
         print(f"Update loss: {avg_loss}")
         with open(config_args.rl_script_args.output_dir + "/history.pkl", "wb") as file:
             pickle.dump(history, file)
@@ -287,8 +385,6 @@ def main(config_args):
     print(f"Training took {time.time() - _time} seconds")
     with open(config_args.rl_script_args.output_dir + "/history.pkl", "wb") as file:
         pickle.dump(history, file)
-
-    lm_server.close()
 
 if __name__ == '__main__':
     main()

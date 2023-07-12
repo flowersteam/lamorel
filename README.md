@@ -2,6 +2,11 @@
 
 *Lamorel* is a Python library designed for people eager to use Large Language Models (LLMs) in interactive environments (e.g. RL setups).
 
+---
+## ** *News* **
+- **2023/07/12**: an [example](examples/PPO_LoRA_finetuning) showing how to use [LoRA](https://arxiv.org/abs/2106.09685) through the [Peft](https://github.com/huggingface/peft) library for lightweight finetuning has been added.
+
+---
 ## Why *Lamorel*?
 ### What is the difference between *Lamorel* and RLHF libs?
 First of all, *Lamorel* was initially designed to easily use LLMs in interactive environments. For this reason, it is not specialised in RL. However, one can easily implement an RL loop as provided in [examples](examples).
