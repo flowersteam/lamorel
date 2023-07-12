@@ -31,9 +31,8 @@ class LogScoringModuleFn(BaseModuleFunction):
         pass
 
     def forward(self, forward_outputs, minibatch, tokenized_contexts, **kwargs):
-        if self._model_type == "causal":  # hence input should be removed from result
-            logits = forward_outputs["logits"][:, len(tokenized_contexts["input_ids"]) - 1:-1, :]
-            output_tokens = minibatch["input_ids"][:, len(tokenized_contexts["input_ids"]):]
+        if self._model_type == "causal":
+            raise NotImplementedError() # TODO
         else:
             logits = forward_outputs["logits"][:, :-1, :]  # skip </s> token appended by tokenizer
             output_tokens = minibatch["decoder_input_ids"][:, 1:]  # skip pad token
@@ -114,7 +113,7 @@ class PPOUpdater(BaseUpdater):
                                               require_grad=True, minibatch_size=_batch_size * longest_candidate)
                     scores = torch.stack([_o['score'] for _o in output]).squeeze()
                     probas = torch.distributions.Categorical(logits=scores)
-                    values = torch.stack([_o["value"][0] for _o in output])
+                    values = torch.stack([_o["value"][0] for _o in output]).squeeze()
 
                     # Compute policy loss
                     entropy = probas.entropy().mean()
@@ -227,10 +226,9 @@ def main(config_args):
             epoch_ended = t == config_args.rl_script_args.steps_per_epoch - 1
 
             if terminal or epoch_ended:
-                if epoch_ended and not (terminal):
+                if not terminal:
                     print('Warning: trajectory cut off by epoch at %d steps.' % ep_len, flush=True)
-                # if trajectory didn't reach terminal state, bootstrap value target
-                if timeout or epoch_ended:
+                    # if trajectory didn't reach terminal state, bootstrap value target
                     value = lm_server.custom_module_fns(
                         module_function_keys=['value'],
                         contexts=[generate_prompt(o)],
