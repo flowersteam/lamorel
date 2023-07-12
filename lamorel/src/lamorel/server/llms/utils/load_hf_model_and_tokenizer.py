@@ -12,18 +12,17 @@ def load_hf_model_and_tokenizer(type, path, pretrained):
     tokenizer = AutoTokenizer.from_pretrained(path)
 
     # Select class according to type
+    config = AutoConfig.from_pretrained(path)
+
+    n_layers_key = 'num_hidden_layers'
+    if hasattr(config, "attribute_map") and n_layers_key in config.attribute_map:
+        n_layers_key = config.attribute_map[n_layers_key]
+
+    n_layers = getattr(config, n_layers_key)
     model_class = ModelTypesEnum[type].value
     if pretrained:
-        model = model_class.from_pretrained(path)
+        model_method = lambda **kwargs: model_class.from_pretrained(path, **kwargs)
     else:
-        config = AutoConfig.from_pretrained(path)
-        model = model_class.from_config(config)
+        model_method = lambda **kwargs: model_class.from_config(config, **kwargs)
 
-    if ModelTypesEnum[type] == ModelTypesEnum.causal:
-        n_layers = model.config.n_layer
-    elif ModelTypesEnum[type] == ModelTypesEnum.seq2seq:
-        n_layers = len(model.encoder.block)
-    else:
-        raise NotImplementedError()
-
-    return tokenizer, model, n_layers
+    return tokenizer, model_method, n_layers

@@ -8,7 +8,7 @@ from .utils import load_hf_model_and_tokenizer
 from .base_llm import BaseLLM
 
 # Accelerate
-from accelerate import Accelerator
+from accelerate import Accelerator, infer_auto_device_map, init_empty_weights
 accelerator = Accelerator()
 
 from contextlib import nullcontext
@@ -25,20 +25,26 @@ class HF_LLM(BaseLLM):
         super().__init__(args, devices, use_cpu)
         print("Parallelising HF LLM on {} devices".format(len(self.devices)))
         # Load model and tokenizer
-        self._LLM_tokenizer, self._LLM_model, num_layers = load_hf_model_and_tokenizer(
+        self._LLM_tokenizer, _model_constructor, num_layers = load_hf_model_and_tokenizer(
             args.model_type, args.model_path, args.pretrained)
 
         if use_cpu:
             # Current version of the lib does not support parallelization with cpu
-            self._LLM_model.to('cpu')
+            self._LLM_model = _model_constructor().to('cpu')
         else:
             # Set model parallelism
-            layers_per_device = ceil(num_layers / len(self.devices))
-            device_map = {
-                _device: list(range(i * layers_per_device, min((i + 1) * layers_per_device, num_layers)))
-                for i, _device in enumerate(self.devices)
-            }
-            self._LLM_model.parallelize(device_map)
+            with init_empty_weights():
+                self._LLM_model = _model_constructor()
+                self._LLM_model.tie_weights()
+                device_map = infer_auto_device_map(
+                    model=self._LLM_model,
+                    max_memory={
+                        _device: torch.cuda.mem_get_info(f'cuda:{_device}')[0]
+                        for _device in devices
+                    }
+                )
+
+            self._LLM_model = _model_constructor(device_map=device_map)
 
         # Set minibatch generation
         self.__input_encoder = None
