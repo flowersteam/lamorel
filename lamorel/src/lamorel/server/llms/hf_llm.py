@@ -196,7 +196,11 @@ class HF_LLM(BaseLLM):
 
                 lamorel_logger.debug(f"Tokenizing the {_w}-th batch")
                 outputs = [self._LLM_tokenizer(output) for output in _candidates]
-                padded_input = self.__pad_sequence(tokenized_contexts[_w], contexts_max_size)
+                if self.model_type == "seq2seq":
+                    padded_input = self.__pad_sequence(tokenized_contexts[_w], contexts_max_size)
+                else:
+                    padded_input = tokenized_contexts[_w]
+
                 batch_inputs.extend([padded_input for _ in range(len(outputs))])
                 batch_outputs.extend(outputs)
                 _w += 1
