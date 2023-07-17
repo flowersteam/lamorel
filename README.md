@@ -317,10 +317,15 @@ Several examples of configurations can be found in [examples](examples).
 
 ##### Single machine and GPU(s)
 - Config: [local_gpu_config.yaml](examples/configs/local_gpu_config.yaml)
-- Launch command(s):
-    - ```shell
-        python -m lamorel_launcher.launch --config-path absolute/path/to/project/examples/configs --config-name local_gpu_config rl_script_args.path=absolute/path/to/project/examples/example_script.py
-      ```
+  - Launch command(s):
+      - RL script:
+    ```shell
+    python -m lamorel_launcher.launch --config-path absolute/path/to/project/examples/configs --config-name local_gpu_config rl_script_args.path=absolute/path/to/project/examples/example_script.py lamorel_args.accelerate_args.machine_rank=0
+    ```
+      - LLM server:
+    ```shell
+    python -m lamorel_launcher.launch --config-path absolute/path/to/project/examples/configs --config-name local_gpu_config rl_script_args.path=absolute/path/to/project/examples/example_script.py lamorel_args.accelerate_args.machine_rank=1
+    ```
 
 If you do not want your LLM process to use all your GPUs (for instance if you plan to launch multiple LLM servers), set an appropriate value to `model_parallelism_size` in the config.
 
