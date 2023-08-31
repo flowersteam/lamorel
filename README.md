@@ -57,6 +57,7 @@ lm_server.score(contexts=["This is an examples prompt, continue it with"], candi
 We provide a set of [examples](examples)  that use *Lamorel* in interactive environments:
 - [**SayCan**](examples/SayCan): A [SayCan](https://arxiv.org/abs/2204.01691) implementation that controls a robot hand in a simulated PickPlace environment.
 - [**PPO_finetuning**](examples/PPO_finetuning): A lightweight implementation of the PPO approach introduced in ["Grounding Large Language Models in Interactive Environments with Online Reinforcement Learning"](https://arxiv.org/abs/2302.02662) to finetune an LLM policy in [BabyAI-Text](https://github.com/flowersteam/Grounding_LLMs_with_online_RL/tree/main/babyai-text).
+- [**PPO_LoRA_finetuning**](examples/PPO_LoRA_finetuning): A lightweight implementation of the PPO approach introduced in ["Grounding Large Language Models in Interactive Environments with Online Reinforcement Learning"](https://arxiv.org/abs/2302.02662) but use [LoRA](https://arxiv.org/abs/2106.09685) through the [Peft](https://github.com/huggingface/peft) library for lightweight finetuning in [BabyAI-Text](https://github.com/flowersteam/Grounding_LLMs_with_online_RL/tree/main/babyai-text).
 
 ## How to use *Lamorel*
 *Lamorel* is built of three main components:
