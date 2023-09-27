@@ -2,12 +2,11 @@ import torch
 # Accelerate
 from accelerate import Accelerator
 
-accelerator = Accelerator()
-
 
 class BaseLLM(torch.nn.Module):
     def __init__(self, args, devices, use_cpu=False):
         super().__init__()
+        self.accelerator = Accelerator()
         self.devices = devices
         self.device_id = self.devices[0]
         self.use_cpu = use_cpu

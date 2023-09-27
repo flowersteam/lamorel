@@ -7,8 +7,6 @@ from .server.utils import InstructionsEnum
 import logging
 lamorel_logger = logging.getLogger('lamorel_logger')
 
-accelerator = Accelerator()
-
 class Caller:
     '''
     This class should be called by each process.
@@ -16,6 +14,7 @@ class Caller:
     If the current process belongs to the LLM's processes, it will launch the LLM and wait for requests.
     '''
     def __init__(self, config, custom_updater=None, custom_module_functions={}, custom_model_initializer=None):
+        self.accelerator = Accelerator()
         assert dist.is_initialized(), "torch distributed must be used!"
         self.__config = config
         self.__grad_fn_model = None
@@ -33,27 +32,27 @@ class Caller:
             config.distributed_setup_args.n_rl_processes,
             config.distributed_setup_args.n_rl_processes + config.distributed_setup_args.n_llm_processes))
 
-        lamorel_logger.info("Init rl group for process {}".format(accelerator.process_index))
+        lamorel_logger.info("Init rl group for process {}".format(self.accelerator.process_index))
         self._rl_group = dist.new_group(
             ranks=rl_processes,
             backend='gloo'
         )
-        lamorel_logger.info("Init llm group for process {}".format(accelerator.process_index))
+        lamorel_logger.info("Init llm group for process {}".format(self.accelerator.process_index))
         self._llm_group = dist.new_group(
             ranks=llm_processes,
             backend='gloo'
         )
-        lamorel_logger.info("Init rl-llm group for process {}".format(accelerator.process_index))
+        lamorel_logger.info("Init rl-llm group for process {}".format(self.accelerator.process_index))
         self._llm_master_process = rl_processes[-1] + 1  # First LLM process is considered as master
         self._rl_llm_group = dist.new_group(
             ranks=rl_processes + [self._llm_master_process],
             backend='gloo'
         )
 
-        if accelerator.process_index in llm_processes:
+        if self.accelerator.process_index in llm_processes:
             Server(
                 config,
-                llm_processes.index(accelerator.process_index),
+                llm_processes.index(self.accelerator.process_index),
                 self._llm_group,
                 self._llm_master_process,
                 self._rl_llm_group,
@@ -107,7 +106,7 @@ class Caller:
         if expect_answer:
             results = [None for _ in range(dist.get_world_size(group=self._rl_llm_group))]
             dist.broadcast_object_list(object_list=results, src=self._llm_master_process, group=self._rl_llm_group)
-            return results[accelerator.process_index]
+            return results[self.accelerator.process_index]
         else:
             return None
 
