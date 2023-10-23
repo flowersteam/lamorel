@@ -8,8 +8,7 @@ from .utils import load_hf_model_and_tokenizer
 from .base_llm import BaseLLM
 
 # Accelerate
-from accelerate import Accelerator, infer_auto_device_map, init_empty_weights
-accelerator = Accelerator()
+from accelerate import infer_auto_device_map, init_empty_weights
 
 from contextlib import nullcontext
 
@@ -258,9 +257,9 @@ class HF_LLM(BaseLLM):
                     else:
                         minibatch[key] = torch.tensor(value, device=self.device)
 
-                lamorel_logger.debug(f"Calling forward on process {accelerator.process_index}")
+                lamorel_logger.debug(f"Calling forward on process {self.accelerator.process_index}")
                 _outputs = self._LLM_model(**minibatch)  # Get scores before softmax
-                lamorel_logger.debug(f"Forward succeeded on process {accelerator.process_index}")
+                lamorel_logger.debug(f"Forward succeeded on process {self.accelerator.process_index}")
 
                 for _key in module_function_keys:
                     lamorel_logger.debug(f"Computing {_key} function")
@@ -288,12 +287,12 @@ class HF_LLM(BaseLLM):
                         _forward_results[idx][k] = torch.tensor([])
 
         if self.__synchronize_gpus_after_scoring:
-            lamorel_logger.debug(f"Synchronizing GPUs on process {accelerator.process_index}")
+            lamorel_logger.debug(f"Synchronizing GPUs on process {self.accelerator.process_index}")
             for device in self.devices:
                 torch.cuda.synchronize(device)
         if self.__empty_cuda_cache_after_scoring:
-            lamorel_logger.debug(f"Emptying CUDA cache on process {accelerator.process_index}")
+            lamorel_logger.debug(f"Emptying CUDA cache on process {self.accelerator.process_index}")
             torch.cuda.empty_cache()
 
-        lamorel_logger.debug(f"Scoring finished on process {accelerator.process_index}")
+        lamorel_logger.debug(f"Scoring finished on process {self.accelerator.process_index}")
         return _forward_results

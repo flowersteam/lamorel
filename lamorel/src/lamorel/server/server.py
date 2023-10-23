@@ -14,15 +14,15 @@ from .dispatcher import Dispatcher
 from .utils import InstructionsEnum
 
 from accelerate import Accelerator
-accelerator = Accelerator()
 
 class Server:
     def __init__(self, config, llm_index, llm_group, llm_master, rl_llm_group, rl_llm_group_size, custom_updater,
                  custom_module_functions, custom_model_initializer):
+        self.accelerator = Accelerator()
         assert dist.is_initialized(), "torch distributed must be used!"
         self._index = llm_index  # index of current process in the list of llm processes
         self._master_server_rank = llm_master
-        self._is_main_server = accelerator.process_index == self._master_server_rank
+        self._is_main_server = self.accelerator.process_index == self._master_server_rank
         self._rl_llm_group = rl_llm_group
         self._rl_llm_group_size = rl_llm_group_size
         self._llm_group = llm_group
@@ -32,11 +32,11 @@ class Server:
         if config.llm_args.parallelism.use_gpu is False:
             use_cpu = True
             devices = [0]
-            lamorel_logger.info("Using CPU on process {} (index {})".format(accelerator.process_index, self._index, devices))
+            lamorel_logger.info("Using CPU on process {} (index {})".format(self.accelerator.process_index, self._index, devices))
         else:
             use_cpu = False
             devices = self._compute_current_device_map(config)
-            lamorel_logger.info("Devices on process {} (index {}): {}".format(accelerator.process_index, self._index, devices))
+            lamorel_logger.info("Devices on process {} (index {}): {}".format(self.accelerator.process_index, self._index, devices))
         self._model = HF_LLM(config.llm_args, devices, use_cpu)
         self._dispatcher = Dispatcher(self._llm_group, self._rl_llm_group_size - 1, self._llm_group_size,
                                       self._is_main_server, self._master_server_rank, self._index)
@@ -65,7 +65,7 @@ class Server:
         self.run()
 
     def _compute_current_device_map(self, config):
-        current_process_index = accelerator.process_index
+        current_process_index = self.accelerator.process_index
         # First compute which partition of the local GPUs our current llm process should use
         n_processes = config.distributed_setup_args.n_rl_processes + config.distributed_setup_args.n_llm_processes
         process_ids = np.arange(n_processes)
@@ -111,19 +111,19 @@ class Server:
                         llm_results.append([self._updater.perform_update(**_call)])
                 return (instruction, llm_results)
         elif instruction == InstructionsEnum.CLOSE:
-            lamorel_logger.info("Closing LLM server process {}".format(accelerator.process_index))
+            lamorel_logger.info("Closing LLM server process {}".format(self.accelerator.process_index))
             sys.exit()
         else:
             raise NotImplementedError('Unknown provided instruction.')
 
     def run(self):
-        lamorel_logger.info("Launching LLM server process {}".format(accelerator.process_index))
+        lamorel_logger.info("Launching LLM server process {}".format(self.accelerator.process_index))
         while True:
             #### Receive calls from RL processes and dispatch them over LLMs ####
             method_calls = [None for _ in range(self._rl_llm_group_size)]
             if self._is_main_server:
                 dist.gather_object(
-                    obj=None, object_gather_list=method_calls, dst=accelerator.process_index, group=self._rl_llm_group
+                    obj=None, object_gather_list=method_calls, dst=self.accelerator.process_index, group=self._rl_llm_group
                 )
                 method_calls = method_calls[:-1]  # remove last one coming from current process
                 assert len(set([call["instruction"] for call in method_calls])) <= 1  # check all calls are the same

@@ -7,6 +7,8 @@ lamorel_logger = logging.getLogger('lamorel_logger')
 
 def init_distributed_setup():
     try:
+        if os.environ["RANK"] == os.environ["LOCAL_RANK"]: # fix device ordinal in signel machine setup
+            os.environ["ACCELERATE_TORCH_DEVICE"] = f"cuda:{max(0, int(os.environ['RANK']) - 1)}"
         accelerator = Accelerator(
             kwargs_handlers=[
                 InitProcessGroupKwargs(timeout=timedelta(minutes=2))
