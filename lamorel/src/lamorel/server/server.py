@@ -84,7 +84,7 @@ class Server:
         # Compute how to partition local GPUs for local LLMs
         cuda_device_ids = np.arange(torch.cuda.device_count())
         processes_devices = np.array_split(cuda_device_ids, len(current_machine_processes) - n_shared_rl_processes)
-        current_process_devices = list(processes_devices[_local_llm_index])
+        current_process_devices = [device.item() for device in processes_devices[_local_llm_index]]
         if len(current_process_devices) > config.llm_args.parallelism.model_parallelism_size:
             lamorel_logger.info(
                 f"{len(current_process_devices)} gpus available for current LLM but using only model_parallelism_size "
