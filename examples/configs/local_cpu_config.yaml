@@ -14,8 +14,9 @@ lamorel_args:
     pretrained: true
     minibatch_size: 192
     pre_encode_inputs: true
+    load_in_4bit: false
     parallelism:
-      use_gpu: true
+      use_gpu: false
       model_parallelism_size: 1
       synchronize_gpus_after_scoring: false
       empty_cuda_cache_after_scoring: false
