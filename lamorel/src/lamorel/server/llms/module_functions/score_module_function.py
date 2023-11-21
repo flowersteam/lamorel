@@ -2,10 +2,10 @@ from . import BaseModuleFunction
 import torch
 
 class LogScoringModuleFn(BaseModuleFunction):
-    def __init__(self, model_type, pre_encoded_input):
+    def __init__(self, pade_token, model_type, pre_encoded_input):
         super().__init__()
+        self._pad_token = pade_token
         self._model_type = model_type
-        self._pad_token = 0
         self._pre_encoded_input = pre_encoded_input
 
     def initialize(self):
