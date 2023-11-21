@@ -188,9 +188,10 @@ class HF_LLM(BaseLLM):
     def generate(self, contexts, return_logprobs=False, **kwargs):
         generations = []
         for text_input in contexts:
-            encoded_input = self._LLM_tokenizer.encode(text_input, return_tensors='pt').to(self.device)
+            encoded_input = (self._LLM_tokenizer.encode(text_input, return_tensors='pt', add_special_tokens=False)
+                             .to(self.device))
             results = self._LLM_model.generate(
-                encoded_input,
+                input_ids=encoded_input,
                 return_dict_in_generate=True,
                 output_scores=True,
                 **kwargs
@@ -199,10 +200,16 @@ class HF_LLM(BaseLLM):
                 generated_sequences = results.sequences[:, encoded_input.shape[-1]:]
             else:
                 generated_sequences = results.sequences[:, 1:]
+
             _generated_texts = self._LLM_tokenizer.batch_decode(generated_sequences, skip_special_tokens=True)
-            probabilities = torch.stack(results.scores, dim=1).softmax(-1)
-            texts_probabilities = torch.gather(probabilities, 2, generated_sequences[:, :, None]).squeeze(-1)
-            _scores = texts_probabilities.prod(-1)
+            if return_logprobs:
+                logp = torch.stack(results.scores, dim=1)
+                texts_logp = torch.gather(logp, 2, generated_sequences[:, :, None]).squeeze(-1)
+                _scores = texts_logp.sum(-1)
+            else:
+                probabilities = torch.stack(results.scores, dim=1).softmax(-1)
+                texts_probabilities = torch.gather(probabilities, 2, generated_sequences[:, :, None]).squeeze(-1)
+                _scores = texts_probabilities.prod(-1)
 
             generations.append([
                 {
@@ -211,6 +218,11 @@ class HF_LLM(BaseLLM):
                 }
                 for _text, _score in zip(_generated_texts, _scores)
             ])
+
+            if "sequences_scores" in results: # Useful for Beam search
+                for i in range(len(_generated_texts)):
+                    generations[-1][i]["beam_score"] = results.sequences_scores[i].detach().cpu().item()
+
         return generations
 
     def forward(self, module_function_keys, contexts, candidates=None, require_grad=False, minibatch_size=None,
