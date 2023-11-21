@@ -54,6 +54,8 @@ class HF_LLM(BaseLLM):
         self._scoring_minibatch_size = args.minibatch_size
         if args.model_type == "causal":
             self.__minibatch_generator = self.__build_decoder_minibatch
+            if args.pre_encode_inputs:
+                self.__input_encoder = lambda input: self.__get_past_key_values(input)
             self.model_type = "causal"
         elif args.model_type == "seq2seq":
             self.__minibatch_generator = self.__build_encoder_decoder_minibatch
@@ -100,15 +102,35 @@ class HF_LLM(BaseLLM):
         '''
             Concat state and output
         '''
+        assert inputs is not None or inputs_representation is not None
         batch = {
             "input_ids": [],
             "attention_mask": []
         }
-        output_max_size = max([len(_i['input_ids']) + len(_o['input_ids']) for _i, _o in zip(inputs, outputs)])
-        for input, output in zip(inputs, outputs):
-            concatenation = self.__concat_sequences(input, output, output_max_size)
-            batch["input_ids"].append(concatenation["input_ids"])
-            batch["attention_mask"].append(concatenation["attention_mask"])
+
+        output_max_size = max([len(o['input_ids']) for o in outputs])
+        for idx, output in enumerate(outputs):
+            _output = self.__pad_sequence(
+                output,
+                output_max_size
+            )
+            if inputs_representation is None:
+                batch["input_ids"].append(inputs[idx]["input_ids"] + _output["input_ids"])
+            else:
+                batch["input_ids"].append(_output["input_ids"])
+
+            batch["attention_mask"].append(inputs[idx]["attention_mask"] + _output["attention_mask"])
+
+        if inputs_representation is not None:
+            n_layers_tuple = []
+            for _layer in range(inputs_representation.shape[1]):
+                layer_past_key_values = []
+                for _key_or_value in range(2):
+                    layer_past_key_values.append(
+                        inputs_representation[:, _layer, _key_or_value, :, :, :]
+                    )
+                n_layers_tuple.append(tuple(layer_past_key_values))
+            batch["past_key_values"] = tuple(n_layers_tuple)
 
         return batch
 
@@ -151,7 +173,19 @@ class HF_LLM(BaseLLM):
             input_batch[key] = torch.tensor(value, device=self.device)
         return self._LLM_model.encoder(**input_batch, return_dict=False)[0].to(self.device)
 
-    def generate(self, contexts, **kwargs):
+    def __get_past_key_values(self, input):
+        input_batch = {}
+        for key, value in input.items():
+            input_batch[key] = torch.tensor(value, device=self.device)
+        result = self._LLM_model(**input_batch)["past_key_values"]
+        tensor_results = []
+        for _layer in result:
+            layer_tensor = torch.stack([_l.to(self.device) for _l in  _layer], dim=1)
+            tensor_results.append(layer_tensor)
+
+        return torch.stack(tensor_results, dim=1)
+
+    def generate(self, contexts, return_logprobs=False, **kwargs):
         generations = []
         for text_input in contexts:
             encoded_input = self._LLM_tokenizer.encode(text_input, return_tensors='pt').to(self.device)
@@ -188,7 +222,8 @@ class HF_LLM(BaseLLM):
         _ids_tables = {}
         with torch.no_grad() if not require_grad else nullcontext():
             batch_inputs, batch_input_representations, batch_outputs = [], None, []
-            tokenized_contexts = [self._LLM_tokenizer(context) for context in contexts]
+            tokenized_contexts = [self._LLM_tokenizer(context, return_token_type_ids=False, add_special_tokens=False)
+                                  for context in contexts]
             contexts_max_size = max([len(i['input_ids']) for i in tokenized_contexts])
 
             # 1) Concat all samples to prepare batches
@@ -198,11 +233,18 @@ class HF_LLM(BaseLLM):
                     break
 
                 lamorel_logger.debug(f"Tokenizing the {_w}-th batch")
-                outputs = [self._LLM_tokenizer(output) for output in _candidates]
-                if self.model_type == "seq2seq":
-                    padded_input = self.__pad_sequence(tokenized_contexts[_w], contexts_max_size)
+                outputs = [
+                    self._LLM_tokenizer(output, add_special_tokens=False, return_token_type_ids=False)
+                    for output in _candidates]
+                if self.model_type == "causal":
+                    cut_input = {_k: _v[:-1] for _k, _v in tokenized_contexts[_w].items()}
+                    padded_input = self.__pad_sequence(cut_input, contexts_max_size - 1)
+                    end_of_input = {_k: [_v[-1]] for _k, _v in tokenized_contexts[_w].items()}
+                    outputs = [
+                        self.__concat_sequences(end_of_input, _o) for _o in outputs
+                    ]
                 else:
-                    padded_input = tokenized_contexts[_w]
+                    padded_input = self.__pad_sequence(tokenized_contexts[_w], contexts_max_size)
 
                 batch_inputs.extend([padded_input for _ in range(len(outputs))])
                 batch_outputs.extend(outputs)
@@ -214,7 +256,7 @@ class HF_LLM(BaseLLM):
                 f"Preparing to process {len(batch_inputs)} examples with a batch size of {_minibatch_size}...")
             if self.__input_encoder is not None:
                 batch_input_representations = []
-                for step in range(len(contexts) // _minibatch_size + 1):
+                for step in range(len(contexts) // _minibatch_size + 1 ):
                     _input = {}
                     for _i in range(step*_minibatch_size, min((step+1)*_minibatch_size, len(contexts))):
                         if len(_ids_tables[_i]) == 0: break
@@ -230,6 +272,7 @@ class HF_LLM(BaseLLM):
                                                     torch.tensor([len(_c) for _c in _current_candidates], device=self.device),
                                                     dim=0)
                         )
+
                 if len(batch_input_representations) > 0:
                     batch_input_representations = torch.cat(batch_input_representations)
                 else:
@@ -256,7 +299,7 @@ class HF_LLM(BaseLLM):
                 lamorel_logger.debug(f"Putting it on device {self.device}")
                 minibatch = {}
                 for key, value in minibatch_inputs.items():
-                    if key == "encoder_outputs":
+                    if key in ["encoder_outputs", "past_key_values"]:
                         minibatch[key] = value
                     else:
                         minibatch[key] = torch.tensor(value, device=self.device)
