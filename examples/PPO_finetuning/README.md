@@ -1,5 +1,6 @@
 ## Context
 We provide a lightweight implementation of the PPO finetuning performed in ["Grounding Large Language Models in Interactive Environments with Online Reinforcement Learning"](https://arxiv.org/abs/2302.02662).
+We use [Spinning Up's PPO implementation](https://github.com/openai/spinningup/tree/master/spinup/algos/pytorch/ppo).
 
 We leverage Lamorel's custom modules and updaters to add a value head on top of the LLM and finetune all the weights using the PPO loss.
 
