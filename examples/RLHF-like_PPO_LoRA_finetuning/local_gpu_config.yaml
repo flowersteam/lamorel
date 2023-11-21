@@ -1,0 +1,54 @@
+lamorel_args:
+  log_level: info
+  allow_subgraph_use_whith_gradient: false
+  distributed_setup_args:
+    n_rl_processes: 1
+    n_llm_processes: 1
+  accelerate_args:
+    config_file: ../configs/accelerate/default_config.yaml
+    machine_rank: 0
+    main_process_ip: 127.0.0.1
+    num_machines: 1
+  llm_args:
+    model_type: seq2seq
+    model_path: t5-small
+    pretrained: true
+    minibatch_size: 192
+    pre_encode_inputs: true
+    load_in_4bit: false
+    parallelism:
+      use_gpu: true
+      model_parallelism_size: 1
+      synchronize_gpus_after_scoring: false
+      empty_cuda_cache_after_scoring: false
+rl_script_args:
+  path: ???
+  seed: 1
+  # ppo
+  ppo_epochs: 4
+  lam: 0.99
+  gamma: 0.99
+  lr: 1e-6
+  entropy_coef: 0.01
+  value_loss_coef: 0.5
+  clip_eps: 0.2
+  kl_coef: 0.0
+  skip_ratio_spikes: False
+  max_grad_norm: 0.5
+  minibatch_size: 8
+  # llm
+  gradient_batch_size: 1
+  gradient_minibatch_size:
+  ## LoRA
+  use_lora: true
+  lora_r: 16
+  lora_alpha: 32
+  # rl training
+  max_ep_len: 5
+  epochs: 100
+  steps_per_epoch: 256
+  save_freq: 1
+  output_dir: ???
+  loading_path:
+  # environment
+  strings: [ "turn left","turn right","go forward","pick_up","drop","toggle" ]
