@@ -11,6 +11,9 @@ setup(
         'hydra-core',
         'torch>=2.1.0'
     ],
+    extras_require={
+        'quantization':  ["bitsandbytes>=0.41.1"]
+    },
     description="",
     author=""
 )

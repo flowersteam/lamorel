@@ -7,9 +7,10 @@ lamorel_logger = logging.getLogger('lamorel_logger')
 from .utils import load_hf_model_and_tokenizer
 from .base_llm import BaseLLM
 
+from transformers import BitsAndBytesConfig
+
 # Accelerate
 from accelerate import infer_auto_device_map, init_empty_weights
-
 from contextlib import nullcontext
 
 
@@ -47,7 +48,17 @@ class HF_LLM(BaseLLM):
                     }
                 )
 
-            self._LLM_model = _model_constructor(device_map=device_map)
+            constructor_kwargs["device_map"] = device_map
+            if args.load_in_4bit:
+                bnb_config = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_use_double_quant=True,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_compute_dtype=torch.bfloat16
+                )
+                constructor_kwargs["quantization_config"] = bnb_config
+
+            self._LLM_model = _model_constructor(**constructor_kwargs)
 
         # Set minibatch generation
         self.__input_encoder = None
