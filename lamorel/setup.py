@@ -4,7 +4,7 @@ setup(
     name='lamorel',
     packages=find_packages("src"),
     package_dir={"": "src"},
-    version="0.1",
+    version="0.2",
     install_requires=[
         'transformers>=4.35',
         'accelerate>=0.24.1',
@@ -15,5 +15,5 @@ setup(
         'quantization':  ["bitsandbytes>=0.41.1"]
     },
     description="",
-    author=""
+    author="Clément Romac (Hugging Face & Inria)"
 )
