@@ -27,13 +27,17 @@ class HF_LLM(BaseLLM):
         self._LLM_tokenizer, _model_constructor, num_layers = load_hf_model_and_tokenizer(
             args.model_type, args.model_path, args.pretrained)
 
+        constructor_kwargs = {
+            "trust_remote_code": True
+        }
+
         if use_cpu:
             # Current version of the lib does not support parallelization with cpu
-            self._LLM_model = _model_constructor().to('cpu')
+            self._LLM_model = _model_constructor(**constructor_kwargs).to('cpu')
         else:
             # Set model parallelism
             with init_empty_weights():
-                self._LLM_model = _model_constructor()
+                self._LLM_model = _model_constructor(**constructor_kwargs)
                 self._LLM_model.tie_weights()
                 device_map = infer_auto_device_map(
                     model=self._LLM_model,
