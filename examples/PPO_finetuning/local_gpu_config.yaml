@@ -17,7 +17,7 @@ lamorel_args:
     pre_encode_inputs: true
     load_in_4bit: false
     parallelism:
-      use_gpu: false
+      use_gpu: true
       model_parallelism_size: 1
       synchronize_gpus_after_scoring: false
       empty_cuda_cache_after_scoring: false
