@@ -88,9 +88,9 @@ class Dispatcher:
                         if "candidates" in call:
                             _call_batch_ids = np.arange(len(call["candidates"][j]))
                             _minibatches = np.array_split(_call_batch_ids, len(_batch_handlers))
-                            for _handler in _batch_handlers:
+                            for h_idx, _handler in enumerate(_batch_handlers):
                                 _call = deepcopy(_dispatched_call)
-                                _call["candidates"] = [[call["candidates"][j][_idx] for _idx in _minibatches[_handler]]]
+                                _call["candidates"] = [[call["candidates"][j][_idx] for _idx in _minibatches[h_idx]]]
                                 scattered_calls[_handler] = [_call]
                         else:
                             scattered_calls[_batch_handlers[0]] = [_dispatched_call] # TODO also parallelize generation

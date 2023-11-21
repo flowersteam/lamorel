@@ -9,7 +9,7 @@ lamorel_logger = logging.getLogger('lamorel_logger')
 
 from .llms import HF_LLM
 from .llms.updaters import BaseUpdater
-from .llms.module_functions import BaseModuleFunction, ScoreModuleFunction
+from .llms.module_functions import BaseModuleFunction, LogScoringModuleFn
 from .dispatcher import Dispatcher
 from .utils import InstructionsEnum
 
@@ -41,7 +41,8 @@ class Server:
         self._dispatcher = Dispatcher(self._llm_group, self._rl_llm_group_size - 1, self._llm_group_size,
                                       self._is_main_server, self._master_server_rank, self._index)
 
-        custom_module_functions["__score"] = ScoreModuleFunction(self._model.pad_token, config.llm_args.model_type)
+        custom_module_functions["__score"] = LogScoringModuleFn(self._model.pad_token, config.llm_args.model_type,
+                                                                config.llm_args.pre_encode_inputs)
         for k, _fn in custom_module_functions.items():
             assert isinstance(_fn, BaseModuleFunction)
             _fn.device = self._model.device
@@ -54,6 +55,8 @@ class Server:
 
         if custom_updater is not None:
             self._updater = custom_updater
+            self._model._ddp_params_and_buffers_to_ignore = [name for name, buffer in self._model.named_buffers() if
+                                                             buffer.dtype == torch.bool]  # This is the trick, you ask DDP to ignore all buffers that are in torch.bool because GLOO doesn't support bool.
             self._updater.set_llm_module(
                 DDP(self._model, process_group=self._llm_group,
                     find_unused_parameters=config.allow_subgraph_use_whith_gradient),

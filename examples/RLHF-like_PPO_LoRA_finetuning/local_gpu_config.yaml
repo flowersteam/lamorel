@@ -32,6 +32,8 @@ rl_script_args:
   entropy_coef: 0.01
   value_loss_coef: 0.5
   clip_eps: 0.2
+  kl_coef: 0.0
+  skip_ratio_spikes: False
   max_grad_norm: 0.5
   minibatch_size: 8
   # llm
@@ -42,13 +44,11 @@ rl_script_args:
   lora_r: 16
   lora_alpha: 32
   # rl training
-  number_envs: 2
-  max_ep_len: 100
+  max_ep_len: 5
   epochs: 100
-  steps_per_epoch: 10 #256
+  steps_per_epoch: 256
   save_freq: 1
   output_dir: ???
   loading_path:
   # environment
-  task: 'BabyAI-GoToRedBall-v0'
-  action_space: [ "turn_left","turn_right","go_forward","pick_up","drop","toggle" ]
+  strings: [ "turn left","turn right","go forward","pick_up","drop","toggle" ]
