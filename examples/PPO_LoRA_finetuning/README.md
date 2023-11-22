@@ -12,18 +12,27 @@ Finally, using Lamorel's initializer, we add LoRA's adapters to the LLM (which a
 ## Launch
 To launch the example using a single GPU on a local machine:
 1. Spawn a process for the RL code:
-```bash
+<!-- ```bash
 python -m lamorel_launcher.launch \
-       --config-path PROJECT_PATH/examples/PPO_finetuning/ \ 
-       --config-name PROJECT_PATH/examples/PPO_finetuning/local_gpu_config \
+       --config-path /home/ewanlee/Codes/lamorel/examples/PPO_LoRA_finetuning/ \ 
+       --config-name /home/ewanlee/Codes/lamorel/examples/PPO_LoRA_finetuning/local_gpu_config \
        rl_script_args.path=PROJECT_PATH/examples/PPO_finetuning/main.py \
        rl_script_args.output_dir=YOUR_OUTPUT_DIR \
        lamorel_args.accelerate_args.machine_rank=0 \
        lamorel_args.llm_args.model_path=PATH_TO_YOUR_LLM
+``` -->
+```bash
+TRANSFORMERS_OFFLINE=1 python -m lamorel_launcher.launch \
+--config-path /home/ewanlee/Codes/lamorel/examples/PPO_LoRA_finetuning/ \
+--config-name local_gpu_config \
+rl_script_args.path=/home/ewanlee/Codes/lamorel/examples/PPO_LoRA_finetuning/main.py \
+rl_script_args.output_dir=/home/ewanlee/Codes/lamorel/examples/PPO_LoRA_finetuning/logs \
+lamorel_args.accelerate_args.machine_rank=0 \
+lamorel_args.llm_args.model_path=google/flan-t5-small
 ```
 
 2. Spawn a process for the LLM:
-```bash
+<!-- ```bash
 python -m lamorel_launcher.launch \ 
        --config-path PROJECT_PATH/examples/PPO_finetuning/ \
        --config-name PROJECT_PATH/examples/PPO_finetuning/local_gpu_config \
@@ -31,4 +40,13 @@ python -m lamorel_launcher.launch \
        rl_script_args.output_dir=YOUR_OUTPUT_DIR \
        lamorel_args.accelerate_args.machine_rank=1 \
        lamorel_args.llm_args.model_path=PATH_TO_YOUR_LLM
+``` -->
+```bash
+TRANSFORMERS_OFFLINE=1 python -m lamorel_launcher.launch \
+--config-path /home/ewanlee/Codes/lamorel/examples/PPO_LoRA_finetuning/ \
+--config-name local_gpu_config \
+rl_script_args.path=/home/ewanlee/Codes/lamorel/examples/PPO_LoRA_finetuning/main.py \
+rl_script_args.output_dir=/home/ewanlee/Codes/lamorel/examples/PPO_LoRA_finetuning/logs \
+lamorel_args.accelerate_args.machine_rank=1 \
+lamorel_args.llm_args.model_path=google/flan-t5-small
 ```

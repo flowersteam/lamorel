@@ -7,11 +7,10 @@ lamorel_args:
   accelerate_args:
     config_file: ../configs/accelerate/default_config.yaml
     machine_rank: 0
-    main_process_ip: 127.0.0.1
-    num_machines: 2
+    num_machines: 1
   llm_args:
     model_type: seq2seq
-    model_path: t5-small
+    model_path: google/flan-t5-small
     pretrained: true
     minibatch_size: 192
     pre_encode_inputs: true
