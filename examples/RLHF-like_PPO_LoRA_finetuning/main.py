@@ -7,9 +7,8 @@ from typing import List
 
 import hydra
 from utils.ppo_buffer import PPOBuffer
-from utils.generate_prompt import generate_prompt
-from utils.scoring_utils import scores_stacking
 import torch
+from torch.nn.functional import log_softmax
 import numpy as np
 import logging
 
@@ -18,13 +17,11 @@ import time
 import pickle
 import math
 import os
-import functools as f
-from operator import add
 
-from transformers import set_seed
+from transformers import set_seed, top_k_top_p_filtering, AutoTokenizer
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 
-from babyai_text_env import BabyAITextEnv
+from repeat_env import RepeatEnv
 
 from lamorel import Caller, lamorel_init
 from lamorel import BaseUpdater, BaseModuleFunction, BaseModelInitializer
@@ -32,51 +29,31 @@ from lamorel import BaseUpdater, BaseModuleFunction, BaseModelInitializer
 lamorel_init()
 
 from accelerate import Accelerator
-accelerator = Accelerator()
 
-class LogScoringModuleFn(BaseModuleFunction):
-    def __init__(self, model_type, pre_encoded_input):
+class LMLogitsModuleFn(BaseModuleFunction):
+    def __init__(self, model_type):
         super().__init__()
         self._model_type = model_type
         self._pad_token = 0
-        self._pre_encoded_input = pre_encoded_input
 
     def initialize(self):
         pass
 
     def forward(self, forward_outputs, minibatch, tokenized_contexts, **kwargs):
+        # Get last layer's logits from last token in context
         if self._model_type == "causal":
-            if self._pre_encoded_input:
-                end_of_context_position = 0
-            else:  # hence input should be removed from result
-                end_of_context_position = len(
-                    tokenized_contexts[0]["input_ids"]) # inputs are padded so all of same size
-
-            logits = forward_outputs["logits"][:, end_of_context_position:-1, :]
-            output_tokens = minibatch["input_ids"][:, end_of_context_position+1:]
+            logits = forward_outputs["logits"][:, -1, :]
         else:
-            logits = forward_outputs["logits"][:, :-1, :]  # skip </s> token appended by tokenizer
-            output_tokens = minibatch["decoder_input_ids"][:, 1:]  # skip pad token
+            logits = forward_outputs["logits"][:, 0, :]  # skip </s> token appended by tokenizer
 
-        tokens_logprobs = \
-            torch.gather(logits, 2, output_tokens[:, :, None]).squeeze(-1).to(torch.float32)  # filter with sequence tokens
+        return log_softmax(logits, dim=1).cpu()  # ensures we do have log probabilities defined over ]-inf;0]
 
-        # Compute mask to assign probability 1 to padding tokens
-        mask = torch.ones(tokens_logprobs.shape, dtype=torch.bool, device=self.device)
-        for i, _output in enumerate(output_tokens):
-            for j, _token in enumerate(_output):
-                if _token != self._pad_token:
-                    mask[i, j] = False
-        masked_token_probs = tokens_logprobs.masked_fill(mask, 0.0)  # apply mask
-        minibatch_probs = masked_token_probs.sum(-1)  # compute final sequences' probability
 
-        return minibatch_probs.cpu()
 
 class ValueHeadModuleFn(BaseModuleFunction):
-    def __init__(self, model_type, pre_encoded_input):
+    def __init__(self, model_type):
         super().__init__()
         self._model_type = model_type
-        self._pre_encoded_input = pre_encoded_input
 
     def initialize(self):
         if 'hidden_size' in self.llm_config.attribute_map:
@@ -102,13 +79,7 @@ class ValueHeadModuleFn(BaseModuleFunction):
     def forward(self, forward_outputs, minibatch, tokenized_contexts, **kwargs):
         # Get last layer's hidden from last token in context
         if self._model_type == "causal":
-            if self._pre_encoded_input:
-                end_of_context_position = 0
-            else:  # hence input should be removed from result
-                end_of_context_position = len(
-                    tokenized_contexts[0]["input_ids"])  # inputs are padded so all of same size
-
-            model_head = forward_outputs['hidden_states'][-1][:, end_of_context_position, :]
+            model_head = forward_outputs['hidden_states'][-1][:, -1, :]
         else:
             model_head = forward_outputs["decoder_hidden_states"][-1][:, 0, :]
 
@@ -231,26 +202,31 @@ class PPOUpdater(BaseUpdater):
             return filter(lambda p: p.requires_grad, model.parameters())
 
     def perform_update(self, contexts, candidates, _current_batch_ids, **kwargs):
-        if not hasattr(self, 'optimizer'):
-            self._iterator_named_trainable_params = lambda: self._get_trainable_params(self._llm_module, True)
-            self._iterator_trainable_params = (p for n, p in self._iterator_named_trainable_params())
-            self.optimizer = torch.optim.Adam(self._iterator_trainable_params, lr=kwargs["lr"])
+        if not hasattr(self, '_accelerator'):
+            self._accelerator = Accelerator()
 
-            if os.path.exists(kwargs["loading_path"] + "/optimizer.checkpoint"):
-                self.optimizer.load_state_dict(torch.load(kwargs["loading_path"] + "/optimizer.checkpoint"))
+        iterator_named_trainable_params = lambda: self._get_trainable_params(self._llm_module, True)
+        iterator_trainable_params = (p for n, p in iterator_named_trainable_params())
+        if not hasattr(self, 'optimizer'):
+            self.optimizer = torch.optim.Adam(iterator_trainable_params, lr=kwargs["lr"])
 
         current_process_buffer = {}
         for k in ['actions', 'advantages', 'returns', 'logprobs', 'values']:
             current_process_buffer[k] = kwargs[k][_current_batch_ids]
 
+        longest_candidate = max([len(_c) for _c in candidates])
         epochs_losses = {
             "value": [],
             "policy": [],
             "loss": []
         }
 
+        base_log_probs = []
         n_minibatches = math.ceil(len(contexts) / self._minibatch_size)
         for i in tqdm(range(kwargs["ppo_epochs"]), ascii=" " * 9 + ">", ncols=100):
+            if isinstance(base_log_probs, list) and len(base_log_probs) > 0:
+                base_log_probs = torch.cat(base_log_probs)
+
             for step in range(n_minibatches):
                 _minibatch_start_idx = step * self._minibatch_size
                 _minibatch_end_idx = min(
@@ -273,20 +249,22 @@ class PPOUpdater(BaseUpdater):
                     else:
                         _batch_size = self._gradient_minibatch_size
                     # Use LLM to compute again action probabilities and value
-                    output = self._llm_module(['score', 'value'], contexts=_contexts, candidates=_candidates,
-                                              require_grad=True, minibatch_size=_batch_size)
-                    scores = torch.stack([_o['score'] for _o in output]).squeeze()
+                    output = self._llm_module(['value', 'lm_head'], contexts=_contexts,
+                                              require_grad=True, minibatch_size=_batch_size * longest_candidate)
+
+                    scores = torch.stack([_o['lm_head'].squeeze() for _o in output])
                     probas = torch.distributions.Categorical(logits=scores)
                     values = torch.stack([_o["value"][0] for _o in output]).squeeze()
 
                     # Compute policy loss
                     entropy = probas.entropy().mean()
-                    log_prob = probas.log_prob(current_process_buffer['actions'][_start_idx:_stop_idx]) # Use logprobs from dist as they were normalized
+                    log_prob = torch.gather(
+                        scores,
+                        1,
+                        torch.unsqueeze(current_process_buffer['actions'][_start_idx:_stop_idx], 1).long()
+                    ).squeeze()
                     ratio = torch.exp(log_prob - current_process_buffer['logprobs'][_start_idx:_stop_idx])
-                    # assert not (i == 0 and step == 0 and (torch.any(ratio < 0.99) or torch.any(ratio > 1.1)))
-                    if i == 0 and step == 0 and (torch.any(ratio < 0.99) or torch.any(ratio > 1.1)):
-                        logging.warning("PPO ratio != 1 !!")
-
+                    # assert not (i == 0 and step == 0 and (torch.any(ratio < 0.99) or torch.any(ratio > 1.1))), print(f"{_contexts}\n{ratio}")
                     clip_adv = torch.clamp(ratio, 1 - kwargs["clip_eps"], 1 + kwargs["clip_eps"]) * current_process_buffer['advantages'][_start_idx:_stop_idx]
                     policy_loss = -(torch.min(ratio * current_process_buffer['advantages'][_start_idx:_stop_idx], clip_adv)).mean()
                     epochs_losses["policy"].append(policy_loss.detach().cpu().item())
@@ -301,20 +279,43 @@ class PPOUpdater(BaseUpdater):
                     epochs_losses["value"].append(value_loss.detach().cpu().item())
 
                     # Compute final loss
-                    loss = policy_loss - kwargs["entropy_coef"] * entropy + kwargs["value_loss_coef"] * value_loss
+                    loss = policy_loss + kwargs["value_loss_coef"] * value_loss
+                    loss -= kwargs["entropy_coef"] * entropy  # entropy bonus
+                    if kwargs["kl_coef"] > 0:
+                        if i == 0:
+                            with self._llm_module.module._modules['_LLM_model'].disable_adapter():
+                                base_output = self._llm_module(['lm_head'], contexts=_contexts, require_grad=False,
+                                                               minibatch_size=_batch_size * longest_candidate)
+                                _base_log_probs = torch.stack([_o['lm_head'] for _o in base_output]).squeeze()
+                                _base_log_probs = torch.gather(
+                                    _base_log_probs,
+                                    1,
+                                    torch.unsqueeze(current_process_buffer['actions'][_start_idx:_stop_idx], 1).long()
+                                ).squeeze()
+                                base_log_probs.append(_base_log_probs)
+                        else:
+                            _base_log_probs = base_log_probs[_start_idx:_stop_idx]
+
+                        kl_penalty = (log_prob - _base_log_probs)
+                        loss += kwargs["kl_coef"] * kl_penalty.mean()  # kl penalty
+
                     loss = loss / gradient_accumulation_steps
                     epochs_losses["loss"].append(loss.detach().cpu().item())
 
+                    if kwargs['skip_ratio_spikes'] and ratio.mean() > 10.0:
+                        print(f"Warning: skipping {accumulated_batch}th minibatch from epoch {i}")
+                        loss = loss * 0.0
+
                     # Backward
                     loss.backward()
-                torch.nn.utils.clip_grad_norm_(self._iterator_trainable_params, kwargs["max_grad_norm"])
+                torch.nn.utils.clip_grad_norm_(iterator_trainable_params, kwargs["max_grad_norm"])
                 self.optimizer.step()
 
-        if kwargs["save_after_update"] and accelerator.process_index == 1:
+        if kwargs["save_after_update"] and self._accelerator.process_index == 1:
             print("Saving model...")
             model_state_dict = OrderedDict({
-                    k: v for k, v in self._iterator_named_trainable_params()
-                })
+                k: v for k, v in iterator_named_trainable_params()
+            })
             torch.save(model_state_dict, kwargs["output_dir"] + "/model.checkpoint")
             torch.save(self.optimizer.state_dict(), kwargs["output_dir"] + "/optimizer.checkpoint")
             print("Model saved")
@@ -330,7 +331,6 @@ def reset_history():
         "loss": [],
         "policy_loss": [],
         "value_loss": [],
-        "possible_actions": [],
         "actions": [],
         "prompts": [],
     }
@@ -344,7 +344,8 @@ def main(config_args):
     set_seed(seed)
 
     # Instantiate environment
-    envs = BabyAITextEnv(config_args.rl_script_args)
+    tokenizer = AutoTokenizer.from_pretrained(config_args.lamorel_args.llm_args.model_path)
+    env = RepeatEnv(config_args.rl_script_args.strings)
 
     # Create LLM agent
     lm_server = Caller(config_args.lamorel_args,
@@ -362,80 +363,78 @@ def main(config_args):
                            WeightsLoaderInitializer(config_args.rl_script_args.loading_path)
                        ]),
                        custom_module_functions={
-                           'score': LogScoringModuleFn(config_args.lamorel_args.llm_args.model_type,
-                                                       config_args.lamorel_args.llm_args.pre_encode_inputs),
-                           'value': ValueHeadModuleFn(config_args.lamorel_args.llm_args.model_type,
-                                                      config_args.lamorel_args.llm_args.pre_encode_inputs)
+                           'lm_head': LMLogitsModuleFn(
+                                config_args.lamorel_args.llm_args.model_type
+                            ),
+                            'value': ValueHeadModuleFn(
+                                config_args.lamorel_args.llm_args.model_type
+                            )
                        })
 
     # Set up experience buffer
-    buffers = [
-        PPOBuffer(config_args.rl_script_args.steps_per_epoch // config_args.rl_script_args.number_envs,
-                  config_args.rl_script_args.gamma, config_args.rl_script_args.lam)
-        for _ in range(config_args.rl_script_args.number_envs)
-    ]
+    buffer = PPOBuffer(config_args.rl_script_args.steps_per_epoch, config_args.rl_script_args.gamma,
+                       config_args.rl_script_args.lam)
+
+    def generate(logits, use_sample=True):
+        if use_sample:
+            logits = top_k_top_p_filtering(logits.unsqueeze(dim=0), top_k=0, top_p=1.0)
+            next_token = torch.multinomial(torch.exp(logits), num_samples=1)
+        else:
+            next_token = np.argmax(logits)
+
+        return next_token.item()
 
     # Prepare for interaction with environment
-    (o, infos), ep_ret, ep_len = envs.reset(), \
-        [0 for _ in range(config_args.rl_script_args.number_envs)], \
-        [0 for _ in range(config_args.rl_script_args.number_envs)]
-
+    (_o, _info), ep_ret, ep_len = env.reset(), 0, 0
+    base_prompt = _o
     history = reset_history()
-    history["goal"].extend([_i["goal"] for _i in infos])
-
+    tokens_buffer = []
     for epoch in range(config_args.rl_script_args.epochs):
-        __time = time.time()
-        for t in tqdm(range(config_args.rl_script_args.steps_per_epoch // config_args.rl_script_args.number_envs),
-                      ascii=" " * 9 + ">", ncols=100):
-            possible_actions = [_i["possible_actions"] for _i in infos]
-            prompts = [generate_prompt(_o, _i) for _o, _i in zip(o, infos)]
-            output = lm_server.custom_module_fns(['score', 'value'],
-                                                 contexts=prompts,
-                                                 candidates=possible_actions)
-            scores = scores_stacking([_o['score'] for _o in output])
-            proba_dist = torch.distributions.Categorical(logits=scores)
-            values = torch.stack([_o["value"][0] for _o in output])
-            sampled_actions = proba_dist.sample()
-            log_probs = proba_dist.log_prob(sampled_actions)
-            actions_id = sampled_actions.cpu().numpy()
-            actions_command = []
-            for j in range(len(actions_id)):
-                command = possible_actions[j][int(actions_id[j])]
-                actions_command.append(command)
+        for t in range(config_args.rl_script_args.steps_per_epoch):
+            __time = time.time()
+            # Value
+            prompt = base_prompt + tokenizer.decode(tokens_buffer)
+            output = lm_server.custom_module_fns(['value', 'lm_head'],
+                                                 contexts=[prompt],
+                                                 minibatch_size=1)[0]
+            value = output["value"][0].item()
+            logits = output["lm_head"][0]
 
-            o, r, d, infos = envs.step(actions_id=actions_id, actions_command=actions_command)
-            epoch_ended = (t+1)*config_args.rl_script_args.number_envs == config_args.rl_script_args.steps_per_epoch
-            bootstrap_dict = {
-                "ids": [],
-                "contexts": []
-            }
-            for i in range(config_args.rl_script_args.number_envs):
-                buffers[i].store(prompts[i], possible_actions[i], actions_id[i], r[i], values[i], log_probs[i])
-                ep_ret[i] += r[i]
-                ep_len[i] += 1
-                timeout = ep_len[i] == config_args.rl_script_args.max_ep_len
-                terminal = d[i] or timeout
-                if terminal or epoch_ended:
-                    if not terminal:
-                        bootstrap_dict["ids"].append(i)
-                        bootstrap_dict["contexts"].append(generate_prompt(o[i], infos[i]))
-                    else:
-                        buffers[i].finish_path(0)
-                        history["ep_len"].append(ep_len[i])
-                        history["ep_ret"].append(ep_ret[i])
-                        ep_len[i], ep_ret[i] = 0, 0
-                        history["goal"].append(infos[i]["goal"])
+            a = generate(logits)
+            log_prob = logits[a]
+            tokens_buffer.append(a)
+            decoded_string = tokenizer.decode(tokens_buffer)
+            _o, r, d, _info = env.step(decoded_string)
+            buffer.store(prompt, a, r, value, log_prob)
+            ep_ret += r
+            ep_len += 1
 
-            if len(bootstrap_dict["ids"]) > 0:
-                # print('Warning: trajectory cut off by epoch at %d steps.' % ep_len, flush=True)
-                # if trajectory didn't reach terminal state, bootstrap value target
-                output = lm_server.custom_module_fns(
-                    module_function_keys=['value'],
-                    contexts=bootstrap_dict["contexts"],
-                    candidates=[[""] for _ in range(len(bootstrap_dict["contexts"]))]
-                )
-                for _i in range(len(output)):
-                    buffers[bootstrap_dict["ids"][_i]].finish_path(output[_i]["value"][0])
+            timeout = ep_len == config_args.rl_script_args.max_ep_len
+            terminal = d or timeout
+            epoch_ended = t == config_args.rl_script_args.steps_per_epoch - 1
+
+            if terminal or epoch_ended:
+                if not terminal:
+                    print('Warning: trajectory cut off by epoch at %d steps.' % ep_len, flush=True)
+                    prompt = base_prompt + tokenizer.decode(tokens_buffer)
+                    value = lm_server.custom_module_fns(
+                        module_function_keys=['value'],
+                        contexts=[prompt],
+                        candidates=[[""]],
+                        minibatch_size=1
+                    )[0]["value"][0].item()
+                else:
+                    value = 0
+
+                buffer.finish_path(value)
+                if terminal:
+                    print(f"Ret: {ep_ret}")
+                    print(f"Len: {ep_len}")
+                    history["ep_len"].append(ep_len)
+                    history["ep_ret"].append(ep_ret)
+                    (_o, _info), ep_ret, ep_len = env.reset(), 0, 0
+                    base_prompt = _o
+                    tokens_buffer = []
 
         # Perform PPO update!
         print(f"PPO update number {epoch + 1}")
@@ -448,17 +447,10 @@ def main(config_args):
         loading_path = config_args.rl_script_args.loading_path \
             if config_args.rl_script_args.loading_path is not None else ""
 
-        # Stack trajectories for all envs
-        # TODO: Randomize and mix up environments' trajectories
-        trajectories = [buf.get() for buf in buffers]
-        collected_trajectories = {
-            k: torch.cat([traj[k] for traj in trajectories]) if isinstance(trajectories[0][k], torch.Tensor)
-            else list(f.reduce(add, [traj[k] for traj in trajectories]))
-            for k, _ in trajectories[0].items()
-        }
 
+        collected_trajectories = buffer.get()
         update_results = lm_server.update(collected_trajectories['obs'],
-                                          collected_trajectories['possible_act'],
+                                          [[""] for _ in range(config_args.rl_script_args.steps_per_epoch)],
                                           actions=collected_trajectories['act'],
                                           returns=collected_trajectories['ret'],
                                           advantages=collected_trajectories['adv'],
@@ -470,6 +462,8 @@ def main(config_args):
                                           value_loss_coef=config_args.rl_script_args.value_loss_coef,
                                           max_grad_norm=config_args.rl_script_args.max_grad_norm,
                                           ppo_epochs=config_args.rl_script_args.ppo_epochs,
+                                          skip_ratio_spikes=config_args.rl_script_args.skip_ratio_spikes,
+                                          kl_coef=config_args.rl_script_args.kl_coef,
                                           save_after_update=save_model_and_history,
                                           output_dir=saving_path,
                                           loading_path=loading_path
@@ -481,10 +475,7 @@ def main(config_args):
         history["loss"].append(avg_loss)
         history["policy_loss"].append(avg_policy_loss)
         history["value_loss"].append(avg_value_loss)
-        history["possible_actions"].extend(collected_trajectories['possible_act'])
-        history["actions"].extend([
-            _poss_act[int(_a.item())] for _poss_act, _a in
-            zip(collected_trajectories['possible_act'], collected_trajectories['act'])])
+        history["actions"].extend([tokenizer.decode(int(_a)) for _a in collected_trajectories['act']])
         history["prompts"].extend(collected_trajectories['obs'])
         print(f"Update loss: {avg_loss}")
 

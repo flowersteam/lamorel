@@ -4,19 +4,36 @@
 
 ---
 ## ** *News* **
+- **2023/11/21 - V0.2**: 
+  - The support of Decoder-Only models has been largely improved.
+  - Optimizations:
+    - contexts sent to lamorel are automatically padded, easing the use of custom modules (see [examples](examples/)).
+    - batching has been improved.
+    - `pre_encode_inputs: true` now works for all models, allowing one to cache contexts.
+    - quantization has been added (please use `pip install .[quantization]` and set `load_in_4bit: true` in your config) using [bitsandbytes](https://github.com/TimDettmers/bitsandbytes) through [Accelerate](https://github.com/huggingface/accelerate) and [Transformers](https://github.com/huggingface/transformers).
+  - Simply setting `load_in_4bit: true` in the fongi of [PPO_LoRA_finetuning example](examples/PPO_LoRA_finetuning) results in using [QLoRA](https://arxiv.org/abs/2305.14314).
+  - [Tests](tests) have been added to ensure scoring and training properly work.
+  - [PPO_finetuning](examples/PPO_finetuning) and [PPO_LoRA_finetuning](examples/PPO_LoRA_finetuning) have been improved:
+    - gradient accumulation has been fixed.
+    - you can now load finetuned weights with `loading_path`.
+    - the environment is now vectorized for faster training.
+  - A new [example](examples/RLHF-like_PPO_LoRA_finetuning) shows how to consider tokens as actions as in an RLHF setup (this example can be used for RLHF purposes by modifying the reward).
 - **2023/07/12**: an [example](examples/PPO_LoRA_finetuning) showing how to use [LoRA](https://arxiv.org/abs/2106.09685) through the [Peft](https://github.com/huggingface/peft) library for lightweight finetuning has been added.
 
 ---
 ## Why *Lamorel*?
 ### What is the difference between *Lamorel* and RLHF libs?
-First of all, *Lamorel* was initially designed to easily use LLMs in interactive environments. For this reason, it is not specialised in RL. However, one can easily implement an RL loop as provided in [examples](examples).
 
-A key component of RLHF is that generating a sequence of tokens given a prompt is considered as a full (and terminated) episode. Steps are therefore the generation of each token in the generated sequence.
-This method is for instance useful to finetune LLMs to generate token sequences that maximize a reward function (e.g. learned from interactions with humans).
-However, this setup is not suited for interacting with an external environment that requires multiple interactions (e.g. multiple text generations) to end an episode. 
+*Lamorel* was initially designed to easily use LLMs in interactive environments. 
+It is especially made for high throughput using a distributed architecture.
+The philosophy of *Lamorel* is to be very permissive and allow as much as possible usage of LLMs while maintaining scaling: the application should run with 1 or N LLMs.
 
-This is why we advise users that lie in the RLHF setup and do not want to reimplement the RL loop by themselves to use such libs that already come with RL implementations (e.g. [RL4LMs](https://github.com/allenai/RL4LMs), [TRL](https://github.com/lvwerra/trl)).
-On the opposite, if you want to use your LLM in an interactive environment where acting in the environment leads your agent to a new state (and possibly a new prompt for your LLM) that is still part of the same episode, *Lamorel* may help you.
+For this reason, it is not specialised neither in RL nor in particular in RLHF. 
+Our [examples](examples) illustrate how *Lamorel* can be used for various applications including [RLHF-like finetuning](examples/RLHF-like_PPO_LoRA_finetuning).
+However, one must understand that *Lamorel*'s philosophy means that users must implement themselves what they want to do with the LLM(s).
+
+This is why we advise users knowing in advance they want to do RLHF, especially without any modification of classic implementations, to use libs specialised in RLHF that already come with RL implementations (e.g. [RL4LMs](https://github.com/allenai/RL4LMs), [TRL](https://github.com/lvwerra/trl)).
+On the other hand, users more inclined to experiment with implementations or looking for an LLM lib they can use in different projects may prefer *Lamorel*.
 
 ### *Lamorel*'s key features
 1. Abstracts the use of LLMs (e.g. tonekization, batches) into simple calls
@@ -24,7 +41,7 @@ On the opposite, if you want to use your LLM in an interactive environment where
 lm_server.generate(contexts=["This is an examples prompt, continue it with"])
 lm_server.score(contexts=["This is an examples prompt, continue it with"], candidates=["a sentence", "another sentence"])
 ```
-2. Provides a method to compute the probability of token sequences (e.g. action commands) given a prompt
+2. Provides a method to compute the log probability of token sequences (e.g. action commands) given a prompt
 3. Is made for scaling up your experiments by deploying multiple instances of the LLM and dispatching the computation thanks to a simple configuration file
 ```yaml
   distributed_setup_args:
@@ -38,9 +55,13 @@ lm_server.score(contexts=["This is an examples prompt, continue it with"], candi
     model_path: t5-small
     pretrained: true
     minibatch_size: 4
+    pre_encode_inputs: true
+    load_in_4bit: false
     parallelism:
       use_gpu: true
       model_parallelism_size: 2
+      synchronize_gpus_after_scoring: false
+      empty_cuda_cache_after_scoring: false
 ```
 5. Allows one to give their own PyTorch modules to compute custom operations (e.g. to add new heads on top of the LLM)
 6. Allows one to train the LLM (or part of it) thanks to a [Data Parallelism](https://pytorch.org/tutorials/intermediate/ddp_tutorial.html) setup where the user provides its own update method 
@@ -52,12 +73,14 @@ lm_server.score(contexts=["This is an examples prompt, continue it with"], candi
 ## Installation
 1. `cd lamorel`
 2. `pip install .`
+3. Use `pip install .[quantization]` if you want to access 4 bits loading
 
 ## Examples
 We provide a set of [examples](examples)  that use *Lamorel* in interactive environments:
 - [**SayCan**](examples/SayCan): A [SayCan](https://arxiv.org/abs/2204.01691) implementation that controls a robot hand in a simulated PickPlace environment.
 - [**PPO_finetuning**](examples/PPO_finetuning): A lightweight implementation of the PPO approach introduced in ["Grounding Large Language Models in Interactive Environments with Online Reinforcement Learning"](https://arxiv.org/abs/2302.02662) to finetune an LLM policy in [BabyAI-Text](https://github.com/flowersteam/Grounding_LLMs_with_online_RL/tree/main/babyai-text).
 - [**PPO_LoRA_finetuning**](examples/PPO_LoRA_finetuning): A lightweight implementation of the PPO approach introduced in ["Grounding Large Language Models in Interactive Environments with Online Reinforcement Learning"](https://arxiv.org/abs/2302.02662) but use [LoRA](https://arxiv.org/abs/2106.09685) through the [Peft](https://github.com/huggingface/peft) library for lightweight finetuning in [BabyAI-Text](https://github.com/flowersteam/Grounding_LLMs_with_online_RL/tree/main/babyai-text).
+- [**RLHF-like_PPO_LoRA_finetuning**](examples/RLHF-like_PPO_LoRA_finetuning): We provide a simple example of PPO finetuning on a LLM which is asked to generate specific token sequences (as in RLHF, each token is a different action)
 
 ## How to use *Lamorel*
 *Lamorel* is built of three main components:
@@ -88,7 +111,7 @@ Do not forget to close the connection with servers at the end of your script.
 Once instantiated, you can use the different methods of the `Caller` object to send requests to your LLMs.
 
 #### Scoring
-First, we provide the `score` method to compute the probability of a sequence of tokens (a `candidate`) given a prompt (`context`).
+First, we provide the `score` method to compute the log probability of a sequence of tokens (a `candidate`) given a prompt (`context`).
 *Lamorel* allows to provide multiple candidates for a single context but also to batch this computation for multiple contexts (along with their associated candidates). Using this, one can use a classic vectorized RL setup where at each step, multiple environments running in parallel return their current state and expect an action. 
 ```python
 lm_server.score(contexts=["This is an examples prompt, continue it with"], 
@@ -98,7 +121,7 @@ lm_server.score(contexts=["This is an examples prompt, continue it with"],
 #### Generation
 *Lamorel* also provides a method for text generation. Similarly to the `score` method, one can give multiple prompts (`contexts`).
 Our `generate` method can use any keyword argument from [Transformers API](https://huggingface.co/docs/transformers/main_classes/text_generation).
-In addition of the generated texts, it also returns the probability of each generated sequence.
+In addition of the generated texts, it also returns the probability (or log probability if `return_logprobs=True` is passed) of each generated sequence.
 
 ```python
 lm_server.generate(contexts=["This is an examples prompt, continue it with"])
@@ -122,10 +145,11 @@ See the example below where we implement a Multi Layer Perceptron (MLP) on top o
 from lamorel import BaseModuleFunction
 
 class TwoLayersMLPModuleFn(BaseModuleFunction):
-    def __init__(self, model_type, n_outputs):
+    def __init__(self, model_type, n_outputs, pre_encoded_input):
         super().__init__()
         self._model_type = model_type
         self._n_outputs = n_outputs
+        self._pre_encoded_input = pre_encoded_input
 
     def initialize(self):
         '''
@@ -133,7 +157,17 @@ class TwoLayersMLPModuleFn(BaseModuleFunction):
         - self.llm_config gives the configuration of the LLM (e.g. useful to know the size of representations)
         - self.device gives you access to the main device (e.g. GPU) the LLM is using
         '''
-        llm_hidden_size = self.llm_config.to_dict()[self.llm_config.attribute_map['hidden_size']]
+        if 'hidden_size' in self.llm_config.attribute_map:
+            _hidden_size_key = self.llm_config.attribute_map['hidden_size']
+        else:
+            if "word_embed_proj_dim" in self.llm_config.to_dict():
+                _hidden_size_key = "word_embed_proj_dim"
+            elif "hidden_size" in self.llm_config.to_dict():
+                _hidden_size_key = "hidden_size"
+            else:
+                print(self.llm_config.to_dict())
+                raise NotImplementedError("Unknown hidden size key")
+        llm_hidden_size = self.llm_config.to_dict()[_hidden_size_key]
         self.mlp = torch.nn.Sequential(
             torch.nn.Linear(llm_hidden_size, 128),
             torch.nn.Linear(128, 128),
@@ -147,11 +181,17 @@ class TwoLayersMLPModuleFn(BaseModuleFunction):
         - minibatch gives access to the input data (i.e. a prompt and multiple candidates) given to the LLM
         - tokenized_context gives access to the prompt used
         '''
-        # Get the last layer's representation from the token right after the prompt
-        if self._model_type == "causal": # adapt to the Transformers API differing between Encoder-Decoder and Decoder-only models
-            model_head = forward_outputs['hidden_states'][0][0, len(tokenized_contexts["input_ids"])-1, :]
+        # Get last layer's hidden from last token in context
+        if self._model_type == "causal":
+            if self._pre_encoded_input:
+                end_of_context_position = 0
+            else:  # hence input should be removed from result
+                end_of_context_position = len(
+                    tokenized_contexts[0]["input_ids"])  # inputs are padded so all of same size
+
+            model_head = forward_outputs['hidden_states'][-1][:, end_of_context_position, :]
         else:
-            model_head = forward_outputs['encoder_last_hidden_state'][0, len(tokenized_contexts["input_ids"]) - 1, :]
+            model_head = forward_outputs["decoder_hidden_states"][-1][:, 0, :]
         
         # Give representation to our MLP
         output = self.mlp(model_head)
@@ -165,7 +205,10 @@ Once implemented, you can give your custom module(s) to the *Lamorel* `Caller` (
 ```python
 lm_server = Caller(config_args.lamorel_args,
                    custom_module_functions={
-                       'mlp_head': TwoLayersMLPModuleFn(config_args.lamorel_args.llm_args.model_type, 2)
+                       'mlp_head': TwoLayersMLPModuleFn(
+                         config_args.lamorel_args.llm_args.model_type, 
+                         2, 
+                         config_args.lamorel_args.llm_args.pre_encode_inputs)
                    })
 # Direct call
 lm_server.custom_module_fns(module_function_keys=['mlp_head'],
@@ -236,7 +279,10 @@ we provide the `_current_batch_ids` variable giving the indexes of contexts (and
 ```python
 lm_server = Caller(config_args.lamorel_args,
                    custom_module_functions={
-                       'mlp_head': TwoLayersMLPModuleFn(config_args.lamorel_args.llm_args.model_type, 2)
+                       'mlp_head': TwoLayersMLPModuleFn(
+                         config_args.lamorel_args.llm_args.model_type, 
+                         2, 
+                         config_args.lamorel_args.llm_args.pre_encode_inputs)
                    },
                    custom_updater=TestUpdater())
 
@@ -288,6 +334,7 @@ lamorel_args: # Arguments for Lamorel
     pretrained: true # (true, false): set this to false if you want to keep the LLM's architecture but re-initialize its wegihts
     pre_encode_inputs: true # whether encoding contexts should be optimized when using Encoder-Decoder models
     minibatch_size: 4 # batch size per forward passes, adapt this number to your GPU memory
+    load_in_4bit: false # whether the model should be loaded in 4 bits
     parallelism: # Model parallelism
       use_gpu: true # (true, false) set this to false if you want your LLM(s) to use CPU
       model_parallelism_size: 1 # number of GPUs user per LLM server
@@ -318,14 +365,9 @@ Several examples of configurations can be found in [examples](examples).
 
 ##### Single machine and GPU(s)
 - Config: [local_gpu_config.yaml](examples/configs/local_gpu_config.yaml)
-  - Launch command(s):
-      - RL script:
-    ```shell
-    python -m lamorel_launcher.launch --config-path absolute/path/to/project/examples/configs --config-name local_gpu_config rl_script_args.path=absolute/path/to/project/examples/example_script.py lamorel_args.accelerate_args.machine_rank=0
-    ```
-      - LLM server:
-    ```shell
-    python -m lamorel_launcher.launch --config-path absolute/path/to/project/examples/configs --config-name local_gpu_config rl_script_args.path=absolute/path/to/project/examples/example_script.py lamorel_args.accelerate_args.machine_rank=1
+- Launch command(s):
+  - ```shell
+      python -m lamorel_launcher.launch --config-path absolute/path/to/project/examples/configs --config-name local_gpu_config rl_script_args.path=absolute/path/to/project/examples/example_script.py
     ```
 
 If you do not want your LLM process to use all your GPUs (for instance if you plan to launch multiple LLM servers), set an appropriate value to `model_parallelism_size` in the config.

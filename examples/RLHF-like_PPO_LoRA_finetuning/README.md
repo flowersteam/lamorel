@@ -1,11 +1,12 @@
 ## Context
-We provide a lightweight implementation of the PPO finetuning performed in ["Grounding Large Language Models in Interactive Environments with Online Reinforcement Learning"](https://arxiv.org/abs/2302.02662).
+We provide a simple example of PPO finetuning on a LLM which is asked to generate specific token sequences.
+As in RLHF, each token is a different action.
 
+We use [LoRA](https://arxiv.org/abs/2106.09685) through the [Peft](https://github.com/huggingface/peft) library for lightweight finetuning.
 We leverage Lamorel's custom modules and updaters to add a value head on top of the LLM and finetune all the weights using the PPO loss.
 
 ## Installation
-1. Install [BabyAI-Text](https://github.com/flowersteam/Grounding_LLMs_with_online_RL/tree/main/babyai-text) environment
-2. Install required packages: `pip install -r requirements.txt`
+1.Install required packages: `pip install -r requirements.txt`
 
 ## Launch
 To launch the example using a single GPU on a local machine:

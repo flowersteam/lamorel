@@ -1,5 +1,5 @@
-def generate_prompt(obs):
-    prompt = "Goal of the agent: {}\n".format(obs["mission"])
-    prompt += "Observation: {}\n".format(', '.join(obs['descriptions']))
-    prompt += "Action: "
+def generate_prompt(obs, infos):
+    prompt = "{}\n".format(infos["goal"])
+    prompt += "Observation: {}\n".format(', '.join(obs))
+    prompt += "Action:"
     return prompt
