@@ -165,3 +165,6 @@ outputs
 
 # DS_STORE
 .DS_Store
+
+logs
+launch.json

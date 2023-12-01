@@ -12,13 +12,14 @@ lamorel_args:
   llm_args:
     model_type: seq2seq
     model_path: google/flan-t5-small
+    # model_path: t5-small
     pretrained: true
     minibatch_size: 192
     pre_encode_inputs: true
     load_in_4bit: false
     parallelism:
       use_gpu: true
-      model_parallelism_size: 1
+      model_parallelism_size: 2
       synchronize_gpus_after_scoring: false
       empty_cuda_cache_after_scoring: false
 rl_script_args:
@@ -46,7 +47,7 @@ rl_script_args:
   max_ep_len: 100
   epochs: 100
   steps_per_epoch: 10 #256
-  save_freq: 1
+  save_freq: 10
   output_dir: ???
   loading_path:
   # environment

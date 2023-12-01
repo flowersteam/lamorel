@@ -231,6 +231,7 @@ class PPOUpdater(BaseUpdater):
             return filter(lambda p: p.requires_grad, model.parameters())
 
     def perform_update(self, contexts, candidates, _current_batch_ids, **kwargs):
+        # import pdb; pdb.set_trace()
         if not hasattr(self, 'optimizer'):
             self._iterator_named_trainable_params = lambda: self._get_trainable_params(self._llm_module, True)
             self._iterator_trainable_params = (p for n, p in self._iterator_named_trainable_params())
@@ -394,7 +395,7 @@ def main(config_args):
                                                  candidates=possible_actions)
             scores = scores_stacking([_o['score'] for _o in output])
             proba_dist = torch.distributions.Categorical(logits=scores)
-            values = torch.stack([_o["value"][0] for _o in output])
+            values = torch.stack([_o["value"][0] for _o in output]) # TODO: Check if this is correct
             sampled_actions = proba_dist.sample()
             log_probs = proba_dist.log_prob(sampled_actions)
             actions_id = sampled_actions.cpu().numpy()
@@ -447,6 +448,8 @@ def main(config_args):
             os.makedirs(saving_path, exist_ok=True)
         loading_path = config_args.rl_script_args.loading_path \
             if config_args.rl_script_args.loading_path is not None else ""
+        
+        # import pdb; pdb.set_trace()
 
         # Stack trajectories for all envs
         # TODO: Randomize and mix up environments' trajectories
@@ -499,6 +502,7 @@ def main(config_args):
     os.makedirs(saving_path, exist_ok=True)
     with open(f"{saving_path}/history.pkl", "wb") as file:
         pickle.dump(history, file)
+    lm_server.close()
 
 if __name__ == '__main__':
     main()
