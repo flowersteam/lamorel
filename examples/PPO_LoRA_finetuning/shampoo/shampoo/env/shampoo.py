@@ -1,3 +1,4 @@
+from __future__ import annotations
 import gymnasium
 from gymnasium import spaces
 import numpy as np
@@ -5,13 +6,16 @@ import functools
 
 from pettingzoo import AECEnv
 from pettingzoo.utils import agent_selector, wrappers
+from pettingzoo.utils.env_logger import EnvLogger
+from pettingzoo.utils.wrappers.base import BaseWrapper
 import string
+
 
 CHARSET = string.ascii_letters + string.digits + string.punctuation + " "
 
 __all__ = {'env', 'raw_env'}
 
-def env(render_mode=None):
+def env(render_mode=None) -> AECEnv:
     """
     The env function often wraps the environment in wrappers by default.
     You can find full documentation for these methods
@@ -19,6 +23,8 @@ def env(render_mode=None):
     """
     internal_render_mode = render_mode if render_mode != "ansi" else "human"
     env = raw_env(render_mode=internal_render_mode)
+    # This wrapper translate the environment's observations to text, used for text-based agents
+    env = ShampooTextWrapper(env)
     # This wrapper is only for environments which print results to the terminal
     if render_mode == "ansi":
         env = wrappers.CaptureStdoutWrapper(env)
@@ -39,7 +45,7 @@ class raw_env(AECEnv):
     """
     metadata = {"render_modes": ["human"], "name": "Shampoo-v0"}
 
-    def __init__(self, num_shampoos=3, render_mode='human'):
+    def __init__(self, num_shampoos=3, render_mode='human') -> None:
 
         """
         The init method takes in environment arguments and
@@ -102,16 +108,16 @@ class raw_env(AECEnv):
     # lru_cache allows observation and action spaces to be memoized, reducing clock cycles required to get each agent's space.
     # If your spaces change over time, remove this line (disable caching).
     @functools.lru_cache(maxsize=None)
-    def observation_space(self, agent):
+    def observation_space(self, agent) -> spaces.Space:
         return self._observation_spaces[agent]
     
     # Action space should be defined here.
     # If your spaces change over time, remove this line (disable caching).
     @functools.lru_cache(maxsize=None)
-    def action_space(self, agent):
+    def action_space(self, agent) -> spaces.Space:
         return self._action_spaces[agent]
     
-    def render(self):
+    def render(self) -> None:
         """
         Renders the environment. In human mode, it can print to terminal, open
         up a graphical window, or open up some other display that a human can see and understand.
@@ -150,7 +156,7 @@ class raw_env(AECEnv):
                     print(f"Shampoo {buyer_decision + 1} is chosen by the buyer.")
                     print("--------")
 
-    def observe(self, agent):
+    def observe(self, agent) -> dict:
         """
         Observe should return the observation of the specified agent. This function
         should return a sane observation (though not necessarily the most up to date possible)
@@ -167,7 +173,7 @@ class raw_env(AECEnv):
             }
             return buyer_observation
 
-    def close(self):
+    def close(self) -> None:
         """
         Close should release any graphical displays, subprocesses, network connections
         or any other environment data which should not be kept around after the
@@ -175,7 +181,7 @@ class raw_env(AECEnv):
         """
         pass
 
-    def reset(self, seed=None, options=None):
+    def reset(self, seed=None, options=None) -> None:
         """
         Reset needs to initialize the following attributes
         - agents
@@ -204,14 +210,17 @@ class raw_env(AECEnv):
         self._agent_selector = agent_selector(self.agents)
         self.agent_selection = self._agent_selector.next()
 
-    def get_seller_observation(self):
+    def get_seller_observation(self) -> dict:
+        """
+        Return the seller observation.
+        """
         return {
             "properties": self.shampoo_properties,
             "values": self.shampoo_values,
             "prices": self.shampoo_prices,
         }
     
-    def step(self, action):
+    def step(self, action) -> None:
         """
         step(action) takes in an action for the current agent (specified by
         agent_selection) and needs to update
@@ -270,3 +279,91 @@ class raw_env(AECEnv):
         self._accumulate_rewards()
 
 
+class ShampooTextWrapper(BaseWrapper):
+    """
+    This wrapper converts the outputs of observe() to text.
+    """
+    def __init__(self, env:AECEnv) -> None:
+        """
+        Initialize the wrapper.
+        """
+        super().__init__(env)
+        assert isinstance(
+            env, AECEnv
+        ), "ShampooTextWrapper is only compatible with AEC environments."
+
+        self.seller_observation_space = spaces.Text(max_length=512, charset=CHARSET)
+        self.buyer_observation_space = spaces.Text(max_length=512, charset=CHARSET)
+        self._observation_spaces = {"seller": self.seller_observation_space, "buyer": self.buyer_observation_space}
+
+    # Observation space should be defined here.
+    # If your spaces change over time, remove this line (disable caching).
+    @functools.lru_cache(maxsize=None)
+    def observation_space(self, agent) -> spaces.Space:
+        """
+        Returns the observation space of the specified agent.
+        ------------------------------------------------
+        Input:
+            agent: the specified agent
+        Output:
+            obs_space: the observation space of the specified agent
+        ------------------------------------------------
+        """
+        return self._observation_spaces[agent]
+
+    def observe(self, agent) -> str:
+        """
+        Returns the observation of the specified agent in a string format.
+        ------------------------------------------------
+        Input:
+            agent: the specified agent
+        Output:
+            obs_str: the observation of the specified agent in a string format
+        ------------------------------------------------
+        """
+        obs = super().observe(agent)
+        if agent == "seller":
+            return self._format_seller_observation(obs)
+        elif agent == "buyer":
+            return self._format_buyer_observation(obs)
+
+    def _format_seller_observation(self, obs) -> str:
+        """
+        Format the seller observation to a string.
+        ------------------------------------------------
+        Input:
+            obs: the seller observation, not used in this function
+        Output:
+            obs_str: the formatted seller observation
+        ------------------------------------------------
+        """
+        obs_str = ''
+        for i in range(self.num_shampoos):
+            obs_str += f"Shampoo {i + 1}:" + "\n"
+            obs_str += f"\tProperties: {self.shampoo_properties[i]} (Cleanliness, Hair Protection, Safety)" + "\n"
+            obs_str += f"\tValue: {self.shampoo_values[i]}" + "\n"
+            obs_str += f"\tPrice: ${self.shampoo_prices[i]:.2f}" + "\n"
+        return obs_str
+    
+    def _format_buyer_observation(self, obs) -> str:
+        """
+        Format the buyer observation to a string.
+        ------------------------------------------------
+        Input:
+            obs: the buyer observation
+        Output:
+            obs_str: the formatted buyer observation
+        ------------------------------------------------
+        """
+        obs_str = "The seller's descriptions:" + "\n"
+        obs_str += obs["information"] + "\n"
+        obs_str += "The shampoo prices:" + "\n"
+        for i in range(self.num_shampoos):
+            obs_str += f"Shampoo {i + 1}: ${self.shampoo_prices[i]:.2f}" + "\n"
+        return obs_str
+
+    def __str__(self) -> str:
+        """
+        Return the name of the environment.
+        """
+        return str(self.env)
