@@ -214,7 +214,10 @@ class HF_LLM(BaseLLM):
 
             _generated_texts = self._LLM_tokenizer.batch_decode(generated_sequences, skip_special_tokens=True)
             if return_logprobs:
-                logp = torch.stack(results.scores, dim=1)
+                # logp = torch.stack(results.scores, dim=1)
+                # texts_logp = torch.gather(logp, 2, generated_sequences[:, :, None]).squeeze(-1)
+                # _scores = texts_logp.sum(-1)
+                logp = torch.stack(results.scores, dim=1).log_softmax(-1)
                 texts_logp = torch.gather(logp, 2, generated_sequences[:, :, None]).squeeze(-1)
                 _scores = texts_logp.sum(-1)
             else:

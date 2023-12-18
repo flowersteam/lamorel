@@ -9,8 +9,8 @@ Finally, using Lamorel's initializer, we add LoRA's adapters to the LLM (which a
 1. Install [BabyAI-Text](https://github.com/flowersteam/Grounding_LLMs_with_online_RL/tree/main/babyai-text) environment
 2. Install required packages: `pip install -r requirements.txt`
 
-## Launch
-1. Spawn both processes (RL collecting data and LLM):
+## Launch for BabyAI-Text
+Spawn both processes (RL collecting data and LLM):
 <!-- ```bash
 python -m lamorel_launcher.launch \
        --config-path /home/ewanlee/Codes/lamorel/examples/PPO_LoRA_finetuning/ \ 
@@ -26,4 +26,23 @@ TRANSFORMERS_OFFLINE=1 python -m lamorel_launcher.launch \
 --config-name local_gpu_config \
 rl_script_args.path=/home/ewanlee/Codes/lamorel/examples/PPO_LoRA_finetuning/main.py \
 rl_script_args.output_dir=/home/ewanlee/Codes/lamorel/examples/PPO_LoRA_finetuning/logs \
+```
+
+## Launch for Shampoo-Text
+Spawn both processes (RL collecting data and LLM):
+<!-- ```bash
+python -m lamorel_launcher.launch \
+       --config-path /home/ewanlee/Codes/lamorel/examples/PPO_LoRA_finetuning/ \ 
+       --config-name /home/ewanlee/Codes/lamorel/examples/PPO_LoRA_finetuning/local_gpu_config \
+       rl_script_args.path=PROJECT_PATH/examples/PPO_finetuning/main.py \
+       rl_script_args.output_dir=YOUR_OUTPUT_DIR \
+       lamorel_args.accelerate_args.machine_rank=0 \
+       lamorel_args.llm_args.model_path=PATH_TO_YOUR_LLM
+``` -->
+```bash
+TRANSFORMERS_OFFLINE=1 python -m lamorel_launcher.launch \
+--config-path /home/ewanlee/Codes/lamorel/examples/PPO_LoRA_finetuning/ \
+--config-name local_gpu_config_shampoo \
+rl_script_args.path=/home/ewanlee/Codes/lamorel/examples/PPO_LoRA_finetuning/main_shampoo.py \
+rl_script_args.output_dir=/home/ewanlee/Codes/lamorel/examples/PPO_LoRA_finetuning/logs_shampoo \
 ```

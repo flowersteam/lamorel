@@ -167,4 +167,5 @@ outputs
 .DS_Store
 
 logs
+logs_shampoo
 launch.json

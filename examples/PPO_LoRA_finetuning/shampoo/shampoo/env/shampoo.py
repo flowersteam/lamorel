@@ -1,6 +1,7 @@
 from __future__ import annotations
 import gymnasium
 from gymnasium import spaces
+from gymnasium.utils import seeding
 import numpy as np
 import functools
 
@@ -68,12 +69,14 @@ class raw_env(AECEnv):
 
         # Store number of shampoo types
         self.num_shampoos = num_shampoos
+        # Store the cost of information
+        self.info_cost = 0.1
 
-        # Create random shampoos for the store
-        self.shampoo_properties = np.random.choice([0, 1], (num_shampoos, 3))
-        # the maximum value of a shampoo is 3
-        self.shampoo_prices = np.random.uniform(1, 3, num_shampoos)
-        self.shampoo_values = np.sum(self.shampoo_properties, axis=1)
+        # # Create random shampoos for the store
+        # self.shampoo_properties = self.np_random.choice([0, 1], (self.num_shampoos, 3))
+        # # the maximum value of a shampoo is 3
+        # self.shampoo_prices = self.np_random.uniform(1, 3, self.num_shampoos)
+        # self.shampoo_values = np.sum(self.shampoo_properties, axis=1)
 
         # Seller observation space
         self.seller_observation_space = spaces.Dict(
@@ -117,6 +120,9 @@ class raw_env(AECEnv):
     def action_space(self, agent) -> spaces.Space:
         return self._action_spaces[agent]
     
+    def _seed(self, seed=None):
+        self.np_random, seed = seeding.np_random(seed)
+    
     def render(self) -> None:
         """
         Renders the environment. In human mode, it can print to terminal, open
@@ -132,7 +138,7 @@ class raw_env(AECEnv):
                 if self.agent_selection == "seller" and "seller" in self.terminations.keys() and (not self.terminations["seller"]):
                     print("Shampoo Store:")
                     for i in range(self.num_shampoos):
-                        print(f"Shampoo {i + 1}:")
+                        print(f"Shampoo {i}:")
                         print(f"\tProperties: {self.shampoo_properties[i]} (Cleanliness, Hair Protection, Safety)")
                         print(f"\tValue: {self.shampoo_values[i]}")
                         print(f"\tPrice: ${self.shampoo_prices[i]:.2f}")
@@ -143,7 +149,7 @@ class raw_env(AECEnv):
                 elif self.agent_selection == "buyer" and "buyer" in self.terminations.keys() and (not self.terminations["buyer"]):
                     print("Shampoo Store:")
                     for i in range(self.num_shampoos):
-                        print(f"Shampoo {i + 1}:")
+                        print(f"Shampoo {i}:")
                         print(f"\tProperties: {self.shampoo_properties[i]} (Cleanliness, Hair Protection, Safety)")
                         print(f"\tValue: {self.shampoo_values[i]}")
                         print(f"\tPrice: ${self.shampoo_prices[i]:.2f}")
@@ -153,7 +159,7 @@ class raw_env(AECEnv):
                     print("--------")
                     buyer_decision = self.state[self.agent_selection]
                     print("Buyer's Decisions:")
-                    print(f"Shampoo {buyer_decision + 1} is chosen by the buyer.")
+                    print(f"Shampoo {buyer_decision} is chosen by the buyer.")
                     print("--------")
 
     def observe(self, agent) -> dict:
@@ -195,6 +201,15 @@ class raw_env(AECEnv):
         can be called without issues.
         Here it sets up the state dictionary which is used by step() and the observations dictionary which is used by step() and observe()
         """
+        if seed is not None:
+            self._seed(seed)
+
+        # Create random shampoos for the store
+        self.shampoo_properties = self.np_random.choice([0, 1], (self.num_shampoos, 3))
+        # the maximum value of a shampoo is 3
+        self.shampoo_prices = self.np_random.uniform(1, 3, self.num_shampoos)
+        self.shampoo_values = np.sum(self.shampoo_properties, axis=1)
+
         self.agents = self.possible_agents[:]
         self.rewards = {agent: 0 for agent in self.agents}
         self._cumulative_rewards = {agent: 0 for agent in self.agents}
@@ -209,6 +224,12 @@ class raw_env(AECEnv):
         """
         self._agent_selector = agent_selector(self.agents)
         self.agent_selection = self._agent_selector.next()
+
+        assert self.agent_selection == "seller", "Seller must be the first agent to act."
+        # write a prompt to the pretrained large language model (i.e., the sender), let the sender generate descriptions of the shampoos;
+        # the sender's goal is to maximize the price of the shampoo sold
+        self.infos[self.agent_selection]["prompt_prefix"] = "The shampoo store has the following shampoos for sale:\n"
+        self.infos[self.agent_selection]["prompt_suffix"] = "\nPlease describe the shampoos and try your best to sell the shampoo with the higher price. Notice that, you can hidden or reveal the information of the shampoo to the buyer. The buyer will decide which shampoo to buy based on your description and the price of the shampoo. You even can lie to the buyer, but the buyer will not buy the shampoo if the buyer finds out that you are lying. The buyer will not buy the shampoo if the buyer thinks that the shampoo is not worth the price."
 
     def get_seller_observation(self) -> dict:
         """
@@ -257,14 +278,23 @@ class raw_env(AECEnv):
             # Seller reward
             sold_shampoo_price = self.shampoo_prices[action]
             sold_shampoo_value = self.shampoo_values[action]
-            self.rewards[self.agents[0]] = sold_shampoo_price - sold_shampoo_value
+            self.rewards[self.agents[0]] = sold_shampoo_price - self.info_cost
             # Buyer reward
-            self.rewards[self.agents[1]] = sold_shampoo_value - sold_shampoo_price
+            self.rewards[self.agents[1]] = sold_shampoo_value
         else:
             # necessary so that observe() returns a reasonable observation at all times.
             self.state[self.agents[1 - self.agent_name_mapping[agent]]] = None
             # no rewards are allocated until both players give an action
             self._clear_rewards()
+
+            assert self.agent_selection == "seller", "Seller must be the first agent to act."
+            # write a prompt to the pretrained large language model (i.e., the buyer), let the buyer generate a decision;
+            # the buyer's goal is to maximize the value of the shampoo bought;
+            # the buyer will decide which shampoo to buy based on the seller's description and the price of the shampoo;
+            # the buyer will not buy the shampoo if the buyer thinks that the shampoo is not worth the price;
+            # Notice that, the seller's description may be hidden some information of the shampoo, and even be a lie.
+            self.infos[self.agents[1 - self.agent_name_mapping[agent]]]["prompt_prefix"] = "The shampoo store has the following shampoos for sale:\n"
+            self.infos[self.agents[1 - self.agent_name_mapping[agent]]]["prompt_suffix"] = "\nPlease decide which shampoo to buy based on the seller's description and the price of the shampoo. Notice that, the seller's description may be hidden some information of the shampoo, and even be a lie. The buyer will not buy the shampoo if the buyer thinks that the shampoo is not worth the price. The buyer's goal is to maximize the value of the shampoo bought. However, the true value of the shampoo is unknown to the buyer. The buyer can only estimate the value of the shampoo based on the seller's description and the price of the shampoo. The buyer will not buy the shampoo if the buyer thinks that the shampoo is not worth the price. You valid decision is an integer from 0 to 2."
 
         if self.render_mode == "human":
             self.render()
@@ -339,7 +369,7 @@ class ShampooTextWrapper(BaseWrapper):
         """
         obs_str = ''
         for i in range(self.num_shampoos):
-            obs_str += f"Shampoo {i + 1}:" + "\n"
+            obs_str += f"Shampoo {i}:" + "\n"
             obs_str += f"\tProperties: {self.shampoo_properties[i]} (Cleanliness, Hair Protection, Safety)" + "\n"
             obs_str += f"\tValue: {self.shampoo_values[i]}" + "\n"
             obs_str += f"\tPrice: ${self.shampoo_prices[i]:.2f}" + "\n"
@@ -359,7 +389,7 @@ class ShampooTextWrapper(BaseWrapper):
         obs_str += obs["information"] + "\n"
         obs_str += "The shampoo prices:" + "\n"
         for i in range(self.num_shampoos):
-            obs_str += f"Shampoo {i + 1}: ${self.shampoo_prices[i]:.2f}" + "\n"
+            obs_str += f"Shampoo {i}: ${self.shampoo_prices[i]:.2f}" + "\n"
         return obs_str
 
     def __str__(self) -> str:
