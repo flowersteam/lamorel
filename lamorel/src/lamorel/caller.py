@@ -79,8 +79,22 @@ class Caller:
             result = [_r['__score'] for _r in result]
         return result
 
-    def generate(self, contexts: list, **kwargs):
-        return self.__call_model(InstructionsEnum.GENERATE, True, contexts=contexts, **kwargs)
+    def generate(self, contexts: list, return_logprobs: bool = False, **kwargs):
+        '''
+        Returns for each context a list of dict containing for each generated sequence:
+        - `tokens`: the sampled tokens
+        - `text`: the generated text as a string (once the LLM's tokenizer has been used on `tokens`)
+
+        If `return_logprobs=False` is passed, this dict contains two additional keys:
+        - `tokens_probability`: the probability of each token in the sequence
+        - `text_probability`: the probability of the whole sequence (i.e. the product of `tokens_probability`)
+
+        Otherwise, the dict contains the following two additional keys:
+        - `tokens_logprob: the log probability of each token in the sequence
+        - `text_logprob: the log probability of the whole sequence (i.e. the sum of `tokens_logprob`)
+        '''
+        return self.__call_model(InstructionsEnum.GENERATE, True,
+                                 contexts=contexts, return_logprobs=return_logprobs, **kwargs)
 
     def update(self, contexts: typing.List[str], candidates: typing.List[typing.List[str]], **kwargs):
         result = self.__call_model(InstructionsEnum.UPDATE, True, contexts=contexts, candidates=candidates, **kwargs)

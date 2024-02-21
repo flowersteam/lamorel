@@ -1,5 +1,5 @@
 import torch
-from math import ceil
+from torch.nn.functional import log_softmax
 
 import logging
 lamorel_logger = logging.getLogger('lamorel_logger')
@@ -89,12 +89,18 @@ class HF_LLM(BaseLLM):
     def register_module_functions(self, module_functions):
         self._module_functions = torch.nn.ModuleDict(module_functions)
 
-    def __pad_sequence(self, sequence, size):
+    def __pad_sequence(self, sequence, size, right=True):
         sequence_size = len(sequence["input_ids"])
-        ids = sequence["input_ids"] + [
-            self.pad_token
-            for _ in range(size - sequence_size)]
-        mask = sequence["attention_mask"] + [0 for _ in range(size - sequence_size)]
+        if right:
+            ids = sequence["input_ids"] + [
+                self.pad_token
+                for _ in range(size - sequence_size)]
+            mask = sequence["attention_mask"] + [0 for _ in range(size - sequence_size)]
+        else:
+            ids = [
+                      self.pad_token
+                      for _ in range(size - sequence_size)] + sequence["input_ids"]
+            mask = [0 for _ in range(size - sequence_size)] + sequence["attention_mask"]
         sequence["input_ids"] = ids
         sequence["attention_mask"] = mask
         return sequence
@@ -214,20 +220,23 @@ class HF_LLM(BaseLLM):
 
             _generated_texts = self._LLM_tokenizer.batch_decode(generated_sequences, skip_special_tokens=True)
             if return_logprobs:
-                logp = torch.stack(results.scores, dim=1)
-                texts_logp = torch.gather(logp, 2, generated_sequences[:, :, None]).squeeze(-1)
-                _scores = texts_logp.sum(-1)
+                logp = log_softmax(torch.stack(results.scores, dim=1), dim=-1)
+                scores = torch.gather(logp, 2, generated_sequences[:, :, None]).squeeze(-1)
+                aggregated_scores = scores.sum(-1)
             else:
                 probabilities = torch.stack(results.scores, dim=1).softmax(-1)
-                texts_probabilities = torch.gather(probabilities, 2, generated_sequences[:, :, None]).squeeze(-1)
-                _scores = texts_probabilities.prod(-1)
+                scores = torch.gather(probabilities, 2, generated_sequences[:, :, None]).squeeze(-1)
+                aggregated_scores = scores.prod(-1)
 
             generations.append([
                 {
                     "text": _text,
-                    "score": _score.detach().cpu().numpy()
+                    "tokens": _tokens,
+                    "text_probability" if not return_logprobs else "text_logprob": _agg_score.detach().cpu().numpy(),
+                    "tokens_probability" if not return_logprobs else "tokens_logprob": _scores.detach().cpu().numpy()
                 }
-                for _text, _score in zip(_generated_texts, _scores)
+                for _text, _tokens, _scores, _agg_score in
+                zip(_generated_texts, generated_sequences, scores, aggregated_scores)
             ])
 
             if "sequences_scores" in results: # Useful for Beam search
@@ -261,7 +270,7 @@ class HF_LLM(BaseLLM):
                     for output in _candidates]
                 if self.model_type == "causal":
                     cut_input = {_k: _v[:-1] for _k, _v in tokenized_contexts[_w].items()}
-                    padded_input = self.__pad_sequence(cut_input, contexts_max_size - 1)
+                    padded_input = self.__pad_sequence(cut_input, contexts_max_size - 1, right=False)
                     end_of_input = {_k: [_v[-1]] for _k, _v in tokenized_contexts[_w].items()}
                     outputs = [
                         self.__concat_sequences(end_of_input, _o) for _o in outputs
