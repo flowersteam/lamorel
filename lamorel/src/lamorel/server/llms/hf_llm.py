@@ -250,6 +250,12 @@ class HF_LLM(BaseLLM):
         _forward_results = [[] for _ in range(len(contexts))]
         if candidates is None:
             candidates = [[""] for _ in range(len(contexts))]
+        elif len(candidates) == 0 and len(contexts) > 0:
+            candidates = [[""] for _ in contexts]
+        else:
+            assert len(candidates) == len(contexts), "If candidates are provided, there should be one list of candidates per context."
+            if any([len(_c) == 0 for _c in candidates]):
+                candidates = [[""] if len(_c) == 0 else _c for _c in candidates]
 
         _ids_tables = {}
         with torch.no_grad() if not require_grad else nullcontext():
@@ -261,9 +267,6 @@ class HF_LLM(BaseLLM):
             # 1) Concat all samples to prepare batches
             for _w, _candidates in enumerate(candidates):
                 _ids_tables[_w] = [i for i in range(len(batch_inputs), len(batch_inputs) + len(_candidates))]
-                if len(_candidates) == 0:
-                    break
-
                 lamorel_logger.debug(f"Tokenizing the {_w}-th batch")
                 outputs = [
                     self._LLM_tokenizer(output, add_special_tokens=False, return_token_type_ids=False)
