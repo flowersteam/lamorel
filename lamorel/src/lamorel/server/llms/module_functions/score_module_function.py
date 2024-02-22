@@ -1,5 +1,6 @@
 from . import BaseModuleFunction
 import torch
+from torch.nn.functional import log_softmax
 
 class LogScoringModuleFn(BaseModuleFunction):
     def __init__(self, pade_token, model_type, pre_encoded_input):
@@ -25,6 +26,7 @@ class LogScoringModuleFn(BaseModuleFunction):
             logits = forward_outputs["logits"][:, :-1, :]  # skip </s> token appended by tokenizer
             output_tokens = minibatch["decoder_input_ids"][:, 1:]  # skip pad token
 
+        logits = log_softmax(logits, dim=-1)
         tokens_logprobs = \
             torch.gather(logits, 2, output_tokens[:, :, None]).squeeze(-1).to(torch.float32)  # filter with sequence tokens
 
