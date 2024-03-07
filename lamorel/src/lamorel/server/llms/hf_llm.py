@@ -248,8 +248,12 @@ class HF_LLM(BaseLLM):
     def forward(self, module_function_keys, contexts, candidates=None, require_grad=False, minibatch_size=None,
                 **kwargs):
         _forward_results = [[] for _ in range(len(contexts))]
-        if candidates is None:
+        if candidates is None or len(candidates) == 0:
             candidates = [[""] for _ in range(len(contexts))]
+        else:
+            assert len(candidates) == len(contexts), "If candidates are provided, there should be one list of candidates per context."
+            if any([len(_c) == 0 for _c in candidates]):
+                candidates = [[""] if len(_c) == 0 else _c for _c in candidates]
 
         _ids_tables = {}
         with torch.no_grad() if not require_grad else nullcontext():
@@ -261,9 +265,6 @@ class HF_LLM(BaseLLM):
             # 1) Concat all samples to prepare batches
             for _w, _candidates in enumerate(candidates):
                 _ids_tables[_w] = [i for i in range(len(batch_inputs), len(batch_inputs) + len(_candidates))]
-                if len(_candidates) == 0:
-                    break
-
                 lamorel_logger.debug(f"Tokenizing the {_w}-th batch")
                 outputs = [
                     self._LLM_tokenizer(output, add_special_tokens=False, return_token_type_ids=False)
@@ -288,10 +289,9 @@ class HF_LLM(BaseLLM):
                 f"Preparing to process {len(batch_inputs)} examples with a batch size of {_minibatch_size}...")
             if self.__input_encoder is not None:
                 batch_input_representations = []
-                for step in range(len(contexts) // _minibatch_size + 1 ):
+                for step in range(len(contexts) // _minibatch_size + 1):
                     _input = {}
                     for _i in range(step*_minibatch_size, min((step+1)*_minibatch_size, len(contexts))):
-                        if len(_ids_tables[_i]) == 0: break
                         _current_context = batch_inputs[_ids_tables[_i][0]]
                         for k,v in _current_context.items():
                             if k not in _input: _input[k] = []
