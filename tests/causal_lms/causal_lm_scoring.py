@@ -33,7 +33,6 @@ class LogScoringModuleFn(BaseModuleFunction):
             output_tokens = minibatch["decoder_input_ids"][:, 1:]  # skip pad token
 
         logits = log_softmax(logits, dim=-1)
-
         tokens_logprobs = \
             torch.gather(logits, 2, output_tokens[:, :, None]).squeeze(-1).to(torch.float32)  # filter with sequence tokens
 

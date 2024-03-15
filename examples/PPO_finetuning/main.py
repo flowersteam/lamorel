@@ -163,7 +163,7 @@ class PPOUpdater(BaseUpdater):
 
                 self.optimizer.zero_grad()
                 gradient_accumulation_steps = math.ceil(
-                    _minibatch_end_idx - _minibatch_start_idx / self._gradient_batch_size)
+                    (_minibatch_end_idx - _minibatch_start_idx) / self._gradient_batch_size)
                 for accumulated_batch in range(gradient_accumulation_steps):
                     _start_idx = _minibatch_start_idx + accumulated_batch * self._gradient_batch_size
                     _stop_idx = _minibatch_start_idx + min(
