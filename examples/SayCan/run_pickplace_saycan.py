@@ -89,11 +89,11 @@ def main(config_args):
         prompt += "\n# " + task + "\n"
         actions = []
         for i in range(10):
-            ##### Single Lamorel line of code to get scores #####
+            ##### Single Lamorel line of code to get log probabilities #####
             raw_llm_scores = lm_server.score([prompt], [possible_actions])[0].tolist()
 
             ## Compute combined scores given affordance scores
-            llm_scores = {_key: _score for _key, _score in zip(possible_actions, raw_llm_scores)}
+            llm_scores = {_key: np.exp(_score) for _key, _score in zip(possible_actions, raw_llm_scores)}
             combined_scores = {_action: llm_scores[_action] * affordance_scores[_action] for _action in possible_actions}
             combined_scores = normalize_scores(combined_scores)
 

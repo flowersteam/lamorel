@@ -71,6 +71,9 @@ class Caller:
 
     def score(self, contexts: typing.List[str], candidates: typing.List[typing.List[str]],
               additional_module_function_keys: typing.List[str] = [], **kwargs):
+        '''
+        Returns log probabilities for each candidate to follow its context.
+        '''
         module_function_keys = ["__score"]
         module_function_keys.extend(additional_module_function_keys)
         result = self.__call_model(InstructionsEnum.FORWARD, True, module_function_keys=module_function_keys,

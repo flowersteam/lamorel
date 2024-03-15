@@ -37,6 +37,6 @@ class LogScoringModuleFn(BaseModuleFunction):
                 if _token != self._pad_token:
                     mask[i, j] = False
         masked_token_probs = tokens_logprobs.masked_fill(mask, 0.0)  # apply mask
-        minibatch_probs = masked_token_probs.sum(-1)  # compute final sequences' probability
+        minibatch_probs = masked_token_probs.sum(-1)  # compute final log sequences' probability
 
         return minibatch_probs.cpu()
