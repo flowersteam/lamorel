@@ -27,7 +27,13 @@ class SigmoidOutputModuleFn(BaseModuleFunction):
                 raise NotImplementedError("Unknown hidden size key")
 
         self._llm_hidden_size = self.llm_config.to_dict()[_hidden_size_key]
-        self.value_head_op = torch.nn.Sequential(
+        if "num_hidden_layers" in self.llm_config.attribute_map:
+            hidden_layers_config_key = self.llm_config.attribute_map["num_hidden_layers"]
+        else:
+            hidden_layers_config_key = "num_hidden_layers"
+        self._last_hidden_layer = self.llm_config.to_dict()[hidden_layers_config_key] - 1
+
+        self.head_op = torch.nn.Sequential(
             torch.nn.Linear(self._llm_hidden_size, 64),
             torch.nn.Sigmoid(),
             torch.nn.Linear(64, 1),
@@ -37,11 +43,11 @@ class SigmoidOutputModuleFn(BaseModuleFunction):
     def forward(self, forward_outputs, minibatch, tokenized_contexts, **kwargs):
         # Get last layer's hidden from last token in context
         if self._model_type == "causal":
-            model_head = forward_outputs['hidden_states'][-1][:, -1, :]
+            model_head = forward_outputs['hidden_states'][self._last_hidden_layer][:, -1, :]  # WTF ???
         else:
-            model_head = forward_outputs["decoder_hidden_states"][-1][:, 0, :]
+            model_head = forward_outputs["decoder_hidden_states"][self._last_hidden_layer + 1][:, 0, :]
 
-        output = self.value_head_op(model_head.to(torch.float32).to(self.device))
+        output = self.head_op(model_head.to(torch.float32).to(self.device))
         return output.cpu()
 
 
@@ -67,14 +73,14 @@ class BCEUpdater(BaseUpdater):
 
         if not hasattr(self, 'optimizer'):
             if self._use_all_params_for_optim:
-                iterator_named_trainable_params = self._llm_module.named_parameters()
-                # iterator_named_trainable_params = self._llm_module.module._module_functions[
-                #     'sigmoid_output'].named_parameters()
+                # iterator_trainable_params = self._llm_module.parameters()
+                for param in self._llm_module.module._LLM_model.parameters():
+                    param.requires_grad = False
+                iterator_trainable_params = self._llm_module.module._module_functions['sigmoid_output'].parameters()
             else:
-                iterator_named_trainable_params = self.get_trainable_params(self._llm_module, True)
+                iterator_trainable_params = self.get_trainable_params(self._llm_module, False)
 
-            iterator_trainable_params = (p for n, p in iterator_named_trainable_params)
-            self.optimizer = torch.optim.Adam(iterator_trainable_params, lr=5e-4)
+            self.optimizer = torch.optim.Adam(iterator_trainable_params, lr=5e-3)
 
         current_process_buffer = {}
         for k in ['labels']:
@@ -122,7 +128,7 @@ class CausalLMTraining(unittest.TestCase):
             "This sentence is true",
             "This is just true",
             "Yet another true",
-            "A true sentence, this is",
+            "A sentence that is true",
             "This sentence is false",
             "This is just false",
             "Yet another false",
@@ -145,7 +151,7 @@ class CausalLMTraining(unittest.TestCase):
             "What about this true",
             "Or a true like this",
             "And another false",
-            "Here is a false sentence"
+            "Here is a sentence that is false"
         ],
         "y": [
             1,
@@ -157,7 +163,7 @@ class CausalLMTraining(unittest.TestCase):
 
     def test_after_training(self):
         global lm_server
-        for i in range(20):
+        for i in range(100):
             results = lm_server.update(
                 contexts=self.train_dataset["x"],
                 candidates=None,
