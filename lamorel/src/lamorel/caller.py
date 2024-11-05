@@ -1,3 +1,6 @@
+import datetime
+import os
+
 import torch.distributed as dist
 import typing
 from accelerate import Accelerator
@@ -6,6 +9,7 @@ from .server.utils import InstructionsEnum
 
 import logging
 lamorel_logger = logging.getLogger('lamorel_logger')
+gloo_timeout = datetime.timedelta(seconds=int(os.environ.get('GLOO_TIMEOUT', 1800)))
 
 class Caller:
     '''
@@ -35,18 +39,21 @@ class Caller:
         lamorel_logger.info("Init rl group for process {}".format(self.accelerator.process_index))
         self._rl_group = dist.new_group(
             ranks=rl_processes,
-            backend='gloo'
+            backend='gloo',
+            timeout=gloo_timeout
         )
         lamorel_logger.info("Init llm group for process {}".format(self.accelerator.process_index))
         self._llm_group = dist.new_group(
             ranks=llm_processes,
-            backend='gloo'
+            backend='gloo',
+            timeout=gloo_timeout
         )
         lamorel_logger.info("Init rl-llm group for process {}".format(self.accelerator.process_index))
         self._llm_master_process = rl_processes[-1] + 1  # First LLM process is considered as master
         self._rl_llm_group = dist.new_group(
             ranks=rl_processes + [self._llm_master_process],
-            backend='gloo'
+            backend='gloo',
+            timeout=gloo_timeout
         )
 
         if self.accelerator.process_index in llm_processes:
