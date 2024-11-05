@@ -9,7 +9,6 @@ from .server.utils import InstructionsEnum
 
 import logging
 lamorel_logger = logging.getLogger('lamorel_logger')
-gloo_timeout = datetime.timedelta(seconds=int(os.environ.get('GLOO_TIMEOUT', 1800)))
 
 class Caller:
     '''
@@ -30,6 +29,13 @@ class Caller:
         lamorel_logger.setLevel(numeric_log_level)
 
         # Initialize distributed groups
+        if "gloo_timeout" in config:
+            lamorel_logger.info(f"Setting the GLOO timeout to {int(config.gloo_timeout)} seconds.")
+            gloo_timeout = datetime.timedelta(seconds=int(config.gloo_timeout))
+        else:
+            lamorel_logger.info(f"No configuration found for the GLOO timeout, setting it to default: 1800 seconds.")
+            gloo_timeout = datetime.timedelta(seconds=1800)
+
         # RL processes are considered as the first n processes
         rl_processes = list(range(config.distributed_setup_args.n_rl_processes))
         llm_processes = list(range(
