@@ -1,5 +1,6 @@
 lamorel_args:
   log_level: info
+  gloo_timeout: 1800
   allow_subgraph_use_whith_gradient: false
   distributed_setup_args:
     n_rl_processes: 1
