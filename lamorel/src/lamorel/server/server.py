@@ -142,7 +142,7 @@ class Server:
                                 if "__score" in method_calls[0]["module_function_keys"]:
                                     for i in range(len(_call["contexts"])):
                                         assert len(gathered_results[idx][i]["__score"]) == len(_call["candidates"][i])
-                            else: # enough generations
+                            else: 
                                 assert len(_call["contexts"]) == len(gathered_results[idx])
 
                     dist.broadcast_object_list(object_list=gathered_results + [None], src=self._master_server_rank,
