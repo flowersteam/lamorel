@@ -59,12 +59,60 @@ class Dispatcher:
                 gathered_calls.extend(_calls)
         return gathered_calls
 
+    def __split_generations(self, n, m, k):
+        '''
+        n: mumber of contexts
+        m: num_return_seqences
+        k: number of handlers
+
+        split generations over Handlers, when k > n for parallelised generate
+        '''
+        assert k >= n, "condition k > n not respected"
+
+        handlers_per_context = [1] * n
+
+        leftover = k - n
+        idx = 0
+
+        while leftover > 0:
+            handlers_per_context[idx % n] += 1
+            leftover -= 1
+            idx += 1
+
+        tasks = []
+        handler_id = 0
+    
+        for context_id, num_handlers  in enumerate(handlers_per_context):
+            base = m // num_handlers
+            remainder = m % num_handlers
+            left_generations = m
+
+            for i in range(num_handlers):
+                if left_generations == 0: break
+                num_generations = base + (1 if i < remainder else 0)
+                tasks.append({
+                    "handler_id": handler_id,
+                    "context_id": context_id,
+                    "num_return_sequences": num_generations
+                })
+                left_generations -= num_generations
+                handler_id += 1
+
+        return tasks
+
+
+
+
     def __dispatch_batches(self, calls):
         '''
         When `n_callers` < `n_handlers` we can dispatch each call over multiple LLMs.
         We first check for each call whether multiple entries are sent (each caller can send a batch of entries) and dispatch them.
         If we still have enough LLMs, we check if the `score` method is called (i.e. with multiple candidates). If so,
         we dispatch the candidates over multiple LLMs to score minibatches in parallel.
+
+        When n_handlers > n_callers we dispatch llms over calls, using __split_generation function, 
+        We firstly assign ( n_handlers // n_calls handler) to each call, then we asign the rest to the first calls one handler each.
+        for calls having more thean one handler we dispatch return_sequences over handlers
         '''
         scattered_calls = [None for _ in range(self._n_handlers)]
         if self._is_master:
@@ -92,8 +140,21 @@ class Dispatcher:
                                 _call = deepcopy(_dispatched_call)
                                 _call["candidates"] = [[call["candidates"][j][_idx] for _idx in _minibatches[h_idx]]]
                                 scattered_calls[_handler] = [_call]
-                        else:
-                            scattered_calls[_batch_handlers[0]] = [_dispatched_call] # TODO also parallelize generation
+                         
+                        #Parallelised generate when n_llms > len(contexts)"
+                        elif call["instruction"] == InstructionsEnum.GENERATE:
+                                n_seq = call["num_return_sequences"]
+                                num_contexts = len(call['contexts'])
+                                splits = self.__split_generations(num_contexts, n_seq, self._n_handlers)
+                                self._current_calls_infos[j]["generation_map"] = splits
+                                for task_idx, task in enumerate(splits):
+                                    _dispatched_call = copy(dispatched_call)
+                                    _dispatched_call["num_return_sequences"] = task["num_return_sequences"]
+                                    _dispatched_call["contexts"] = [ call["contexts"][task["context_id"]] ]  
+                                    scattered_calls[i + task_idx] = [_dispatched_call]
+                        else:    
+                            raise NotImplementedError("Case Not Implemented")
+                            
                 else:  # Each handler handles multiple batch entry
                     _ids = np.arange(_batch_size)
                     batch_chunks = np.array_split(_ids, self._n_handlers_per_call)
@@ -112,38 +173,71 @@ class Dispatcher:
                 i += self._n_handlers_per_call
         return scattered_calls
 
+
     def __gather_batches(self, calls):
-        '''
-        Gather dispatched batches (dispatched entries but also maybe dispatched scoring candidates)
-        '''
-        # TODO handle generation parallelization once implemented
+        '''' Gather responses after dispatching calls'''
         gathered_calls = []
         if self._is_master:
-            for i in range(0, self._n_handlers, self._n_handlers_per_call):
+
+            step = self._n_handlers_per_call           
+
+            for i in range(0, self._n_handlers, step):
+
+                meta = self._current_calls_infos[i]      
+                instr = meta["instruction"]
+
+                gen_map = meta.get("generation_map")
+                # gather calls based on _split_generation dispatching
+                if instr == InstructionsEnum.GENERATE and gen_map:
+
+                    n_ctx   = meta["batch_size"]
+                    ctx_out = [[] for _ in range(n_ctx)]
+
+                    for task in gen_map:
+                        h_global = i + task["handler_id"]   
+                        part     = calls[h_global][0]          
+                        
+                        if part is None:
+                            continue
+                            
+                        if isinstance(part,list):
+                            if len(part) == 1 and isinstance(part[0], list):
+                                seqs = part[0]
+                            else:
+                                seqs = part
+                        elif isinstance(part,dict) and "__generate" in part:
+                            seqs = part["__generate"]
+                        else:
+                            raise ValueError(f"Unsupported type for GENERATE : {type(part)}")
+
+                        ctx_out[task["context_id"]].extend(seqs)
+                    gathered_calls.append(ctx_out)
+
+                    continue
+                
+
+                # (FORWARD / UPDATE / score)
                 current_call_results = []
-                _batch_size = self._current_calls_infos[i]["batch_size"]
-                if self._n_handlers_per_call / _batch_size > 1:  # Each batch entry has been split over multiple handlers
-                    _ids = np.arange(i, i + self._n_handlers_per_call)
-                    batches_handlers = np.array_split(_ids, _batch_size)  # Infer number of batches
-                    for _batch_handlers in batches_handlers:
-                        current_context_entry_results = {}
-                        for _handler in _batch_handlers:
-                            _result = calls[_handler][0]  # [0] as a single call is handled by a handler
-                            if _result is not None: # concat results to reconstruct entry
-                                if isinstance(_result[0], dict): # [0] as a single context entry is handled by each handler
-                                    for _k, _v in _result[0].items():
-                                        if _k in current_context_entry_results:
-                                            current_context_entry_results[_k] = \
-                                                torch.cat((current_context_entry_results[_k], _result[0][_k]), dim=0)
-                                        else:
-                                            current_context_entry_results[_k] = _result[0][_k]
-                                else:
-                                    current_context_entry_results['__generate'] = _result[0]  # [0] as a single context entry is handled by each handler
-                        current_call_results.append(current_context_entry_results)
+                batch_size = meta["batch_size"]
+
+                if step / batch_size > 1:
+                    ids          = np.arange(i, i + step)
+                    batches_split = np.array_split(ids, batch_size)
+                    for handlers_for_ctx in batches_split:
+                        ctx_dict = {}
+                        for h in handlers_for_ctx:
+                            part = calls[h][0]
+                            if part is not None and isinstance(part[0], dict):
+                                for k, v in part[0].items():
+                                    ctx_dict[k] = torch.cat((ctx_dict[k], v), 0) if k in ctx_dict else v
+                        current_call_results.append(ctx_dict)
                 else:
-                    for j in range(i, i + self._n_handlers_per_call):
-                        current_call_results.extend(calls[j][0]) # [0] as a single context entry is handled by each handler
+                    for h in range(i, i + step):
+                        current_call_results.extend(calls[h][0])
+
                 gathered_calls.append(current_call_results)
+
+        # reset meta data
         self._current_calls_infos = []
         return gathered_calls
 

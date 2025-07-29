@@ -57,6 +57,7 @@ lm_server.score(contexts=["This is an examples prompt, continue it with"], candi
     minibatch_size: 4
     pre_encode_inputs: true
     load_in_4bit: false
+    seed: 5
     parallelism:
       use_gpu: true
       model_parallelism_size: 2
@@ -335,6 +336,7 @@ lamorel_args: # Arguments for Lamorel
     pre_encode_inputs: true # whether encoding contexts should be optimized when using Encoder-Decoder models
     minibatch_size: 4 # batch size per forward passes, adapt this number to your GPU memory
     load_in_4bit: false # whether the model should be loaded in 4 bits
+    seed: 5 # this is used to set the first random engine's seed, if it's not specified 42 is used as a seed. 
     parallelism: # Model parallelism
       use_gpu: true # (true, false) set this to false if you want your LLM(s) to use CPU
       model_parallelism_size: 1 # number of GPUs user per LLM server

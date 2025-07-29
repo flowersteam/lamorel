@@ -8,6 +8,7 @@ from .utils import load_hf_model_and_tokenizer
 from .base_llm import BaseLLM
 
 from transformers import BitsAndBytesConfig
+from transformers import set_seed
 
 # Accelerate
 from accelerate import infer_auto_device_map, init_empty_weights
@@ -23,6 +24,13 @@ class HF_LLM(BaseLLM):
 
     def __init__(self, args, devices, use_cpu):
         super().__init__(args, devices, use_cpu)
+
+        # Set the seed
+        seed = 42
+        if args.seed:
+            seed = args.seed
+        set_seed(seed)
+
         print("Parallelising HF LLM on {} devices".format(len(self.devices)))
         # Load model and tokenizer
         self._LLM_tokenizer, _model_constructor, num_layers = load_hf_model_and_tokenizer(
@@ -82,6 +90,10 @@ class HF_LLM(BaseLLM):
             self.pad_token = 0  # self._LLM_tokenizer(" ")
         self.__synchronize_gpus_after_scoring = args.parallelism.synchronize_gpus_after_scoring
         self.__empty_cuda_cache_after_scoring = args.parallelism.empty_cuda_cache_after_scoring
+
+        # Handling different seeds for sampling 
+        lamorel_logger.info("Setting torch seed to seed + process_index")
+        set_seed(seed + self.accelerator.process_index)
 
     def get_model_config(self):
         return self._LLM_model.config
