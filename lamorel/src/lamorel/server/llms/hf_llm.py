@@ -213,49 +213,63 @@ class HF_LLM(BaseLLM):
             tensor_results.append(layer_tensor)
 
         return torch.stack(tensor_results, dim=1)
-
+    
+    
     def generate(self, contexts, return_logprobs=False, **kwargs):
         generations = []
-        for text_input in contexts:
-            encoded_input = (self._LLM_tokenizer.encode(text_input, return_tensors='pt', add_special_tokens=False)
-                             .to(self.device))
-            results = self._LLM_model.generate(
-                input_ids=encoded_input,
-                return_dict_in_generate=True,
-                output_scores=True,
-                **kwargs
-            )
-            if self.model_type == "causal":  # hence input should be removed from result
-                generated_sequences = results.sequences[:, encoded_input.shape[-1]:]
-            else:
-                generated_sequences = results.sequences[:, 1:]
 
-            _generated_texts = self._LLM_tokenizer.batch_decode(generated_sequences, skip_special_tokens=True)
-            if return_logprobs:
-                logp = log_softmax(torch.stack(results.scores, dim=1), dim=-1)
-                scores = torch.gather(logp, 2, generated_sequences[:, :, None]).squeeze(-1)
-                aggregated_scores = scores.sum(-1)
-            else:
-                probabilities = torch.stack(results.scores, dim=1).softmax(-1)
-                scores = torch.gather(probabilities, 2, generated_sequences[:, :, None]).squeeze(-1)
-                aggregated_scores = scores.prod(-1)
+        self._LLM_tokenizer.pad_token = self._LLM_tokenizer.eos_token
 
-            generations.append([
-                {
+        encoded_inputs = self._LLM_tokenizer(contexts, return_tensors='pt', padding=True, truncation=False,add_special_tokens=True).to(self.device)
+
+        results = self._LLM_model.generate(
+            input_ids=encoded_inputs["input_ids"],
+            attention_mask=encoded_inputs["attention_mask"],
+            return_dict_in_generate=True,
+            output_scores=True,
+            **kwargs
+        )
+
+        num_return_sequences = kwargs.get('num_return_sequences', 1)
+
+        batch_size = encoded_inputs["input_ids"].shape[0]
+
+        if self.model_type == "causal":
+            generated_sequences = results.sequences[:, encoded_inputs["input_ids"].shape[-1]:]
+        else:
+            generated_sequences = results.sequences[:, 1:]
+
+
+        if return_logprobs:
+            logp = log_softmax(torch.stack(results.scores, dim=1), dim=-1)
+            scores = torch.gather(logp, 2, generated_sequences[:, :, None]).squeeze(-1)
+            aggregated_scores = scores.sum(-1)
+
+        else:
+            probabilities = torch.stack(results.scores, dim=1).softmax(-1)
+            scores = torch.gather(probabilities, 2, generated_sequences[:, :, None]).squeeze(-1)
+            aggregated_scores = scores.prod(-1)
+
+        for i in range(batch_size):
+            prompt_generations = []
+            for j in range(num_return_sequences):
+                idx = i * num_return_sequences + j
+                _text = self._LLM_tokenizer.decode(generated_sequences[idx], skip_special_tokens=True)
+                _tokens = generated_sequences[idx]
+                _scores = scores[idx]
+                _agg_score = aggregated_scores[idx]
+                result = {
                     "text": _text,
                     "tokens": _tokens,
                     "text_probability" if not return_logprobs else "text_logprob": _agg_score.detach().cpu().numpy(),
                     "tokens_probability" if not return_logprobs else "tokens_logprob": _scores.detach().cpu().numpy()
                 }
-                for _text, _tokens, _scores, _agg_score in
-                zip(_generated_texts, generated_sequences, scores, aggregated_scores)
-            ])
-
-            if "sequences_scores" in results: # Useful for Beam search
-                for i in range(len(_generated_texts)):
-                    generations[-1][i]["beam_score"] = results.sequences_scores[i].detach().cpu().item()
-
+                if "sequences_scores" in results:
+                    result["beam_score"] = results.sequences_scores[idx].detach().cpu().item()
+                prompt_generations.append(result)
+            generations.append(prompt_generations)
         return generations
+
 
     def forward(self, module_function_keys, contexts, candidates=None, require_grad=False, minibatch_size=None,
                 **kwargs):
