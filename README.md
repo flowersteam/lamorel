@@ -4,6 +4,11 @@
 
 ---
 ## ** *News* **
+- **2025/09/18**
+  - Initial attempt to integrate `lamorel` into `vllm`.
+  - Check the [vllm_details](VLLM_README.md); 
+  - the version is not yet functional. For more details, refer to [vllm_bug](NOTES_VLLM_BUG.md).
+
 - **2023/11/21 - V0.2**: 
   - The support of Decoder-Only models has been largely improved.
   - Optimizations:
