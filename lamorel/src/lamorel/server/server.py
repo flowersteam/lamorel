@@ -8,6 +8,8 @@ import logging
 lamorel_logger = logging.getLogger('lamorel_logger')
 
 from .llms import HF_LLM
+from .llms.vllm_llm import VLLM
+
 from .llms.updaters import BaseUpdater
 from .llms.module_functions import BaseModuleFunction, LogScoringModuleFn
 from .dispatcher import Dispatcher
@@ -37,7 +39,10 @@ class Server:
             use_cpu = False
             devices = self._compute_current_device_map(config)
             lamorel_logger.info("Devices on process {} (index {}): {}".format(self.accelerator.process_index, self._index, devices))
-        self._model = HF_LLM(config.llm_args, devices, use_cpu)
+        
+        # Choosing backend inference (Transformers / vLLM)
+        self._model = VLLM(config.llm_args, devices, use_cpu)  if config.use_vllm else HF_LLM(config.llm_args, devices, use_cpu)
+        
         self._dispatcher = Dispatcher(self._llm_group, self._rl_llm_group_size - 1, self._llm_group_size,
                                       self._is_main_server, self._master_server_rank, self._index)
 

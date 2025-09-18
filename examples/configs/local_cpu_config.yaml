@@ -5,6 +5,7 @@ lamorel_args:
   distributed_setup_args:
     n_rl_processes: 1
     n_llm_processes: 1
+  use_vllm: false
   accelerate_args:
     config_file: accelerate/default_config.yaml
     machine_rank: 0
