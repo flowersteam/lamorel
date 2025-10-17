@@ -4,6 +4,9 @@ lamorel_logger = logging.getLogger('lamorel_logger')
 class BaseUpdater:
     def __init__(self):
         self._llm_module = None
+        self.llm_config = None
+        self.current_process_config = None
+        self.model_config = None
 
     def set_llm_module(self, llm_module):
         self._llm_module = llm_module

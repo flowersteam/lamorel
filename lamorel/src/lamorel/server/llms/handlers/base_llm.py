@@ -1,18 +1,17 @@
 import torch
-# Accelerate
-from accelerate import Accelerator
 
 class BaseLLM(torch.nn.Module):
-    def __init__(self, args, devices, use_cpu=False):
+    def __init__(self, args, devices, process_index, use_cpu=False):
         super().__init__()
-        self.accelerator = Accelerator()
-        self.devices = devices
-        self.device_id = self.devices[0]
+        self.process_index = process_index
+        # self.device_id = self.devices[0]
         self.use_cpu = use_cpu
         if self.use_cpu:
-            self.device = 'cpu'
+            self.main_device = 'cpu'
+            self.devices = None
         else:
-            self.device = torch.device(f'cuda:{self.device_id}')  # use first device of map for tensors
+            self.main_device = torch.device(f'cuda:{devices[0]}')  # use first device of map for tensors
+            self.devices = devices
 
     def register_module_functions(self, module_functions):
         raise NotImplementedError()
@@ -25,6 +24,3 @@ class BaseLLM(torch.nn.Module):
 
     def forward(self, module_function_keys, contexts, candidates=None, require_grad=False, **kwargs):
         raise NotImplementedError()
-
-    def get_trainable_module(self):
-        return None

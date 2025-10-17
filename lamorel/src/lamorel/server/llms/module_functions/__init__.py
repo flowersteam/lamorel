@@ -1,2 +1,2 @@
 from .base_module_function import BaseModuleFunction
-from .score_module_function import LogScoringModuleFn
+from .score_module_function import ScoreModuleFunction

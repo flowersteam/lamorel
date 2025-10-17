@@ -1,18 +1,23 @@
+import time
+
 import torch
 from torch.nn.functional import log_softmax
+from math import ceil
+from itertools import chain
 
 import logging
 lamorel_logger = logging.getLogger('lamorel_logger')
 
-from .utils import load_hf_model_and_tokenizer
+from lamorel.server.llms.utils import load_hf_model_and_tokenizer
 from .base_llm import BaseLLM
 
 from transformers import BitsAndBytesConfig
-from transformers import set_seed
 
 # Accelerate
 from accelerate import infer_auto_device_map, init_empty_weights
 from contextlib import nullcontext
+
+from peft import PeftModel
 
 
 class HF_LLM(BaseLLM):
@@ -22,51 +27,10 @@ class HF_LLM(BaseLLM):
     For each task the default is text in, text out.
     """
 
-    def __init__(self, args, devices, use_cpu):
-        super().__init__(args, devices, use_cpu)
-
-        # Set the seed
-        seed = 42
-        if args.seed:
-            seed = args.seed
-        set_seed(seed)
-
-        print("Parallelising HF LLM on {} devices".format(len(self.devices)))
+    def __init__(self, args, devices, process_index, use_cpu):
+        super().__init__(args, devices, process_index, use_cpu)
         # Load model and tokenizer
-        self._LLM_tokenizer, _model_constructor, num_layers = load_hf_model_and_tokenizer(
-            args.model_type, args.model_path, args.pretrained)
-
-        constructor_kwargs = {
-            "trust_remote_code": True
-        }
-
-        if use_cpu:
-            # Current version of the lib does not support parallelization with cpu
-            self._LLM_model = _model_constructor(**constructor_kwargs).to('cpu')
-        else:
-            # Set model parallelism
-            with init_empty_weights():
-                self._LLM_model = _model_constructor(**constructor_kwargs)
-                self._LLM_model.tie_weights()
-                device_map = infer_auto_device_map(
-                    model=self._LLM_model,
-                    max_memory={
-                        _device: torch.cuda.mem_get_info(f'cuda:{_device}')[0]
-                        for _device in devices
-                    }
-                )
-
-            constructor_kwargs["device_map"] = device_map
-            if args.load_in_4bit:
-                bnb_config = BitsAndBytesConfig(
-                    load_in_4bit=True,
-                    bnb_4bit_use_double_quant=True,
-                    bnb_4bit_quant_type="nf4",
-                    bnb_4bit_compute_dtype=torch.bfloat16
-                )
-                constructor_kwargs["quantization_config"] = bnb_config
-
-            self._LLM_model = _model_constructor(**constructor_kwargs)
+        self._instantiate_model(args)
 
         # Set minibatch generation
         self.__input_encoder = None
@@ -85,15 +49,56 @@ class HF_LLM(BaseLLM):
             raise NotImplementedError()
 
         if self._LLM_tokenizer.pad_token is not None:
-            self.pad_token = 0  # self._LLM_tokenizer(self._LLM_tokenizer.pad_token)
+            self.pad_token = self._LLM_tokenizer.pad_token_id  # self._LLM_tokenizer(self._LLM_tokenizer.pad_token)
+        elif hasattr(args, "pad_token_id") and args.pad_token_id is not None:
+            lamorel_logger.info(f"Setting pad_token_id to {args.pad_token_id}")
+            self.pad_token = args.pad_token_id
+            self._LLM_tokenizer.pad_token_id = args.pad_token_id
         else:
-            self.pad_token = 0  # self._LLM_tokenizer(" ")
-        self.__synchronize_gpus_after_scoring = args.parallelism.synchronize_gpus_after_scoring
-        self.__empty_cuda_cache_after_scoring = args.parallelism.empty_cuda_cache_after_scoring
+            self.pad_token = self._LLM_tokenizer.eos_token_id  # self._LLM_tokenizer(" ")
+            self._LLM_tokenizer.pad_token_id = self._LLM_tokenizer.eos_token_id
+            lamorel_logger.info(f"Setting pad_token_id to {self.pad_token}")
+        self.__synchronize_gpus_after_scoring = args.synchronize_gpus_after_scoring
+        self.__empty_cuda_cache_after_scoring = args.empty_cuda_cache_after_scoring
 
-        # Handling different seeds for sampling 
-        lamorel_logger.info("Setting torch seed to seed + process_index")
-        set_seed(seed + self.accelerator.process_index)
+    def _instantiate_model(self, model_args):
+        self._LLM_tokenizer, _model_constructor, num_layers = load_hf_model_and_tokenizer(
+            model_args.model_type, model_args.model_path, model_args.pretrained)
+
+        constructor_kwargs = {
+            "trust_remote_code": True
+        }
+        if model_args.constructor_kwargs is not None:
+            constructor_kwargs.update(model_args.constructor_kwargs)
+
+        if self.use_cpu:
+            # Current version of the lib does not support parallelization with cpu
+            self._LLM_model = _model_constructor(**constructor_kwargs, device_map="cpu")
+        else:
+            assert len(self.devices) == 1, "Model Parallelism not implemented yet"
+            print("Parallelising HF LLM on {} devices".format(len(self.devices)))
+            # Set model parallelism
+            # with init_empty_weights():
+            #     self._LLM_model = _model_constructor(**constructor_kwargs)
+            #     self._LLM_model.tie_weights()
+            #     device_map = infer_auto_device_map(
+            #         model=self._LLM_model,
+            #         max_memory={
+            #             _device: torch.cuda.mem_get_info(f'cuda:{_device}')[0]
+            #             for _device in self.devices
+            #         }
+            #     )
+            constructor_kwargs["device_map"] = self.main_device
+            if model_args.load_in_4bit:
+                bnb_config = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_use_double_quant=True,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_compute_dtype=torch.bfloat16
+                )
+                constructor_kwargs["quantization_config"] = bnb_config
+
+            self._LLM_model = _model_constructor(**constructor_kwargs)
 
     def get_model_config(self):
         return self._LLM_model.config
@@ -110,15 +115,12 @@ class HF_LLM(BaseLLM):
             mask = sequence["attention_mask"] + [0 for _ in range(size - sequence_size)]
         else:
             ids = [
-                      self.pad_token
-                      for _ in range(size - sequence_size)] + sequence["input_ids"]
+                self.pad_token
+                for _ in range(size - sequence_size)] + sequence["input_ids"]
             mask = [0 for _ in range(size - sequence_size)] + sequence["attention_mask"]
         sequence["input_ids"] = ids
         sequence["attention_mask"] = mask
         return sequence
-
-    def get_trainable_module(self):
-        return self._LLM_model
 
     def __concat_sequences(self, sequence_a, sequence_b, sequence_size=None):
         if sequence_size is None: sequence_size = len(sequence_a['input_ids']) + len(sequence_b['input_ids'])
@@ -127,7 +129,7 @@ class HF_LLM(BaseLLM):
             "attention_mask": sequence_a['attention_mask'] + sequence_b['attention_mask']
         }, sequence_size)
 
-    def __build_decoder_minibatch(self, outputs, inputs, inputs_representation=None):
+    def __build_decoder_minibatch(self, outputs, inputs, inputs_representation=None, forced_size=None):
         '''
             Concat state and output
         '''
@@ -136,19 +138,31 @@ class HF_LLM(BaseLLM):
             "input_ids": [],
             "attention_mask": []
         }
+        if inputs_representation is not None:  # Inputs are already padded
+            output_max_size = max([len(o['input_ids']) for o in outputs])
+            if forced_size is not None: raise NotImplementedError("Unable to force size when contexts are padded")
 
-        output_max_size = max([len(o['input_ids']) for o in outputs])
-        for idx, output in enumerate(outputs):
-            _output = self.__pad_sequence(
-                output,
-                output_max_size
-            )
-            if inputs_representation is None:
-                batch["input_ids"].append(inputs[idx]["input_ids"] + _output["input_ids"])
-            else:
+            for _i, _o in zip(inputs, outputs):
+                _output = self.__pad_sequence(
+                    _o,
+                    output_max_size
+                )
                 batch["input_ids"].append(_output["input_ids"])
-
-            batch["attention_mask"].append(inputs[idx]["attention_mask"] + _output["attention_mask"])
+                batch["attention_mask"].append(_i["attention_mask"] + _output["attention_mask"])
+        else:  # Inputs may not be padded
+            full_sequence_max_size = max([len(_i["input_ids"]) + len(_o["input_ids"]) for _i, _o in zip(inputs, outputs)])
+            assert forced_size is None or forced_size > full_sequence_max_size
+            if forced_size is not None: full_sequence_max_size = forced_size
+            for _i, _o in zip(inputs, outputs):
+                complete_input = {}
+                complete_input["input_ids"] = _i["input_ids"] + _o["input_ids"]
+                complete_input["attention_mask"] = _i["attention_mask"] + _o["attention_mask"]
+                padded_complete_input = self.__pad_sequence(
+                    complete_input,
+                    full_sequence_max_size
+                )
+                batch["input_ids"].append(padded_complete_input["input_ids"])
+                batch["attention_mask"].append(padded_complete_input["attention_mask"])
 
         if inputs_representation is not None:
             n_layers_tuple = []
@@ -163,7 +177,7 @@ class HF_LLM(BaseLLM):
 
         return batch
 
-    def __build_encoder_decoder_minibatch(self, outputs, inputs=None, inputs_representation=None):
+    def __build_encoder_decoder_minibatch(self, outputs, inputs=None, inputs_representation=None, **kwargs):
         '''
             Set state as encoder's input and action as decoder's input
         '''
@@ -172,7 +186,6 @@ class HF_LLM(BaseLLM):
             "decoder_input_ids": [],
             "decoder_attention_mask": []
         }
-
         output_max_size = max([len(o['input_ids']) for o in outputs])
         for idx, output in enumerate(outputs):
             _output = self.__concat_sequences(
@@ -199,29 +212,32 @@ class HF_LLM(BaseLLM):
     def __get_input_embedding_from_encoder(self, input):
         input_batch = {}
         for key, value in input.items():
-            input_batch[key] = torch.tensor(value, device=self.device)
-        return self._LLM_model.encoder(**input_batch, return_dict=False)[0].to(self.device)
+            input_batch[key] = torch.tensor(value, device=self.main_device)
+        return self._LLM_model.encoder(**input_batch, return_dict=False)[0].to(self.main_device)
 
     def __get_past_key_values(self, input):
         input_batch = {}
         for key, value in input.items():
-            input_batch[key] = torch.tensor(value, device=self.device)
+            input_batch[key] = torch.tensor(value, device=self.main_device)
         result = self._LLM_model(**input_batch)["past_key_values"]
         tensor_results = []
         for _layer in result:
-            layer_tensor = torch.stack([_l.to(self.device) for _l in  _layer], dim=1)
+            layer_tensor = torch.stack([_l.to(self.main_device) for _l in _layer], dim=1)
             tensor_results.append(layer_tensor)
 
         return torch.stack(tensor_results, dim=1)
-    
-    
-    def generate(self, contexts, return_logprobs=False, **kwargs):
+
+    def generate(self, contexts, return_logprobs=False, peft_adapter=None, **kwargs):
+        if contexts is None or len(contexts) == 0:
+            return [{}]
+
+        if isinstance(self._LLM_model, PeftModel) and peft_adapter is not None:
+            lamorel_logger.debug(f"Activating {peft_adapter} adapters.")
+            self._LLM_model.set_adapter(peft_adapter)
+
         generations = []
-
-        self._LLM_tokenizer.pad_token = self._LLM_tokenizer.eos_token
-
-        encoded_inputs = self._LLM_tokenizer(contexts, return_tensors='pt', padding=True, truncation=False,add_special_tokens=True).to(self.device)
-
+        encoded_inputs = self._LLM_tokenizer(contexts, return_tensors='pt', padding=True, truncation=False,
+                                             add_special_tokens=False).to(self.device)
         results = self._LLM_model.generate(
             input_ids=encoded_inputs["input_ids"],
             attention_mask=encoded_inputs["attention_mask"],
@@ -229,22 +245,17 @@ class HF_LLM(BaseLLM):
             output_scores=True,
             **kwargs
         )
-
         num_return_sequences = kwargs.get('num_return_sequences', 1)
-
         batch_size = encoded_inputs["input_ids"].shape[0]
-
         if self.model_type == "causal":
             generated_sequences = results.sequences[:, encoded_inputs["input_ids"].shape[-1]:]
         else:
             generated_sequences = results.sequences[:, 1:]
 
-
         if return_logprobs:
             logp = log_softmax(torch.stack(results.scores, dim=1), dim=-1)
             scores = torch.gather(logp, 2, generated_sequences[:, :, None]).squeeze(-1)
             aggregated_scores = scores.sum(-1)
-
         else:
             probabilities = torch.stack(results.scores, dim=1).softmax(-1)
             scores = torch.gather(probabilities, 2, generated_sequences[:, :, None]).squeeze(-1)
@@ -267,43 +278,74 @@ class HF_LLM(BaseLLM):
                 if "sequences_scores" in results:
                     result["beam_score"] = results.sequences_scores[idx].detach().cpu().item()
                 prompt_generations.append(result)
+
             generations.append(prompt_generations)
+
         return generations
 
-
     def forward(self, module_function_keys, contexts, candidates=None, require_grad=False, minibatch_size=None,
+                add_eos_on_candidates=False, peft_adapter=None, pad_contexts=False, forced_context_len=None, forced_sequence_len=None,
                 **kwargs):
+        '''
+        `pad_contexts`: If set to `True`, contexts will be padded to have the same size (either `forced_context_len` if not `None` or the longest context's size). This parameter is ignored if `model_type="seq2seq"` or `pre_encode_inputs=True`.
+        `forced_context_len`: Length up to which contexts must be padded. Used if `pad_contexts=True` or `model_type="seq2seq"` or `pre_encode_inputs=True`.
+        `forced_sequence_len`: With decoder-only models, when candidates are appended to contexts, they are right padded so that complete sequences all have the same size. You can use this parameter to force the size of the complete sequence. Otherwise, it will be padded to match the size of the longest sequence in the batch.
+        '''
+        if contexts is None or len(contexts) == 0:
+            return [{}]
+
+        if isinstance(self._LLM_model, PeftModel) and peft_adapter is not None:
+            lamorel_logger.debug(f"Activating {peft_adapter} adapters.")
+            self._LLM_model.set_adapter(peft_adapter)
+
         _forward_results = [[] for _ in range(len(contexts))]
-        if candidates is None or len(candidates) == 0:
+        if candidates is None:
             candidates = [[""] for _ in range(len(contexts))]
-        else:
-            assert len(candidates) == len(contexts), "If candidates are provided, there should be one list of candidates per context."
-            if any([len(_c) == 0 for _c in candidates]):
-                candidates = [[""] if len(_c) == 0 else _c for _c in candidates]
 
         _ids_tables = {}
         with torch.no_grad() if not require_grad else nullcontext():
             batch_inputs, batch_input_representations, batch_outputs = [], None, []
-            tokenized_contexts = [self._LLM_tokenizer(context, return_token_type_ids=False, add_special_tokens=False)
-                                  for context in contexts]
-            contexts_max_size = max([len(i['input_ids']) for i in tokenized_contexts])
+            ##### HANDLING TOKENIZED CONTEXTS #####
+            if all(isinstance(x, int) for x in list(chain(*contexts))):
+                tokenized_contexts = [{'input_ids': tc, 'attention_mask': [1] * len(tc)} for tc in contexts]
+            else:
+                tokenized_contexts = [
+                    self._LLM_tokenizer(context, return_token_type_ids=False, add_special_tokens=False) for context in contexts]
+            ##### HANDLING TOKENIZED CONTEXTS #####
+
+            if pad_contexts or self.__input_encoder is not None or self.model_type == "seq2seq":  # force all inputs to have the same length (padding left for causal models, right for seq2seq):
+                contexts_max_size = max([len(i['input_ids']) for i in tokenized_contexts])
+                if forced_context_len is not None:
+                    assert forced_context_len >= contexts_max_size
+                    contexts_max_size = forced_context_len
+
+                contexts_sizes = [contexts_max_size for _ in tokenized_contexts]
+            else:
+                contexts_sizes = [len(i["input_ids"]) for i in tokenized_contexts]  # Don't cut inputs
 
             # 1) Concat all samples to prepare batches
             for _w, _candidates in enumerate(candidates):
                 _ids_tables[_w] = [i for i in range(len(batch_inputs), len(batch_inputs) + len(_candidates))]
+                if len(_candidates) == 0:
+                    break
+
                 lamorel_logger.debug(f"Tokenizing the {_w}-th batch")
+                if add_eos_on_candidates:
+                    _candidates = [_c + self._LLM_tokenizer.eos_token for _c in _candidates]
+
                 outputs = [
                     self._LLM_tokenizer(output, add_special_tokens=False, return_token_type_ids=False)
                     for output in _candidates]
+
                 if self.model_type == "causal":
                     cut_input = {_k: _v[:-1] for _k, _v in tokenized_contexts[_w].items()}
-                    padded_input = self.__pad_sequence(cut_input, contexts_max_size - 1, right=False)
+                    padded_input = self.__pad_sequence(cut_input, contexts_sizes[_w] - 1, right=False)
                     end_of_input = {_k: [_v[-1]] for _k, _v in tokenized_contexts[_w].items()}
                     outputs = [
                         self.__concat_sequences(end_of_input, _o) for _o in outputs
                     ]
                 else:
-                    padded_input = self.__pad_sequence(tokenized_contexts[_w], contexts_max_size)
+                    padded_input = self.__pad_sequence(tokenized_contexts[_w], contexts_sizes[_w])
 
                 batch_inputs.extend([padded_input for _ in range(len(outputs))])
                 batch_outputs.extend(outputs)
@@ -315,9 +357,10 @@ class HF_LLM(BaseLLM):
                 f"Preparing to process {len(batch_inputs)} examples with a batch size of {_minibatch_size}...")
             if self.__input_encoder is not None:
                 batch_input_representations = []
-                for step in range(len(contexts) // _minibatch_size + 1):
+                for step in range(len(contexts) // _minibatch_size + 1 ):
                     _input = {}
                     for _i in range(step*_minibatch_size, min((step+1)*_minibatch_size, len(contexts))):
+                        if len(_ids_tables[_i]) == 0: break
                         _current_context = batch_inputs[_ids_tables[_i][0]]
                         for k,v in _current_context.items():
                             if k not in _input: _input[k] = []
@@ -327,7 +370,7 @@ class HF_LLM(BaseLLM):
                         _current_candidates = candidates[step*_minibatch_size: (step+1)*_minibatch_size]
                         batch_input_representations.append(
                             torch.repeat_interleave(result,
-                                                    torch.tensor([len(_c) for _c in _current_candidates], device=self.device),
+                                                    torch.tensor([len(_c) for _c in _current_candidates], device=self.main_device),
                                                     dim=0)
                         )
 
@@ -348,56 +391,77 @@ class HF_LLM(BaseLLM):
                 minibatch_inputs = self.__minibatch_generator(
                     batch_outputs[step_idx:step_idx + current_minibatch_size],
                     inputs=batch_inputs[step_idx:step_idx + current_minibatch_size],
-                    inputs_representation=_inputs_representation
+                    inputs_representation=_inputs_representation,
+                    forced_size=forced_sequence_len
                 )
                 if not module_function_keys == ['__score']:
                     minibatch_inputs["output_hidden_states"] = True
 
                 # Transform it to tensors on the right device
-                lamorel_logger.debug(f"Putting it on device {self.device}")
+                lamorel_logger.debug(f"Putting it on device {self.main_device}")
                 minibatch = {}
                 for key, value in minibatch_inputs.items():
                     if key in ["encoder_outputs", "past_key_values"]:
                         minibatch[key] = value
                     else:
-                        minibatch[key] = torch.tensor(value, device=self.device)
+                        minibatch[key] = torch.tensor(value, device=self.main_device)
 
-                lamorel_logger.debug(f"Calling forward on process {self.accelerator.process_index}")
+                lamorel_logger.debug(f"Calling forward on process {self.process_index}")
                 _outputs = self._LLM_model(**minibatch)  # Get scores before softmax
-                lamorel_logger.debug(f"Forward succeeded on process {self.accelerator.process_index}")
+                lamorel_logger.debug(f"Forward succeeded on process {self.process_index}")
 
                 for _key in module_function_keys:
                     lamorel_logger.debug(f"Computing {_key} function")
                     _fn = self._module_functions[_key]
                     if _key == "__score":
-                        results = _fn(_outputs, minibatch, batch_inputs[step_idx:step_idx + current_minibatch_size])
+                        results = _fn(_outputs, minibatch, batch_inputs[step_idx:step_idx + current_minibatch_size],
+                                      current_minibatch_ids=list(range(step_idx, step_idx + current_minibatch_size)))
                     else:
                         results = _fn(_outputs,
                                       minibatch=minibatch,
                                       tokenized_contexts=batch_inputs[step_idx:step_idx + current_minibatch_size],
+                                      current_minibatch_ids=list(range(step_idx, step_idx + current_minibatch_size)),
                                       **kwargs)
-                    batch_results[_key].append(results)
+                    ##### DICT OUTPUT HANDLING #####
+                    if type(results) is dict:
+                        if len(batch_results[_key]) == 0:
+                            batch_results[_key] = {k: [] for k in results.keys()}
+                        for k, v in results.items():
+                            batch_results[_key][k].append(v)
+                    else:
+                        batch_results[_key].append(results)
+                    ##### DICT OUTPUT HANDLING #####
 
+                    # batch_results[_key].append(results)
+
+            ##### DICT OUTPUT HANDLING #####
             for k, _ in batch_results.items():
                 if len(batch_results[k]) > 0:
-                    batch_results[k] = torch.cat(batch_results[k])
+                    if type(batch_results[k]) is dict:
+                        for _k, _v in batch_results[k].items():
+                            batch_results[k][_k] = torch.cat(batch_results[k][_k])
+                    else:
+                        batch_results[k] = torch.cat(batch_results[k])
 
             for idx in range(len(contexts)):
                 _forward_results[idx] = {}
                 for k, v in batch_results.items():
                     indices = _ids_tables[idx]
                     if len(indices) > 0:
-                        _forward_results[idx][k] = v[indices]
+                        if type(v) is dict:
+                            _forward_results[idx][k] = {kk: v[kk][indices] for kk in v.keys()}
+                        else:
+                            _forward_results[idx][k] = v[indices]
                     else:
                         _forward_results[idx][k] = torch.tensor([])
 
-        if self.__synchronize_gpus_after_scoring:
-            lamorel_logger.debug(f"Synchronizing GPUs on process {self.accelerator.process_index}")
+        if self.__synchronize_gpus_after_scoring and self.main_device != "cpu":
+            lamorel_logger.debug(f"Synchronizing GPUs on process {self.process_index}")
             for device in self.devices:
                 torch.cuda.synchronize(device)
         if self.__empty_cuda_cache_after_scoring:
-            lamorel_logger.debug(f"Emptying CUDA cache on process {self.accelerator.process_index}")
+            lamorel_logger.debug(f"Emptying CUDA cache on process {self.process_index}")
             torch.cuda.empty_cache()
 
-        lamorel_logger.debug(f"Scoring finished on process {self.accelerator.process_index}")
+        lamorel_logger.debug(f"Scoring finished on process {self.process_index}")
         return _forward_results

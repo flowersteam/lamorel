@@ -7,95 +7,82 @@ import numpy as np
 import logging
 lamorel_logger = logging.getLogger('lamorel_logger')
 
-from .llms import HF_LLM
+from .llms.handlers import HandlersEnum
 from .llms.updaters import BaseUpdater
-from .llms.module_functions import BaseModuleFunction, LogScoringModuleFn
+from .llms.module_functions import BaseModuleFunction, ScoreModuleFunction
 from .dispatcher import Dispatcher
 from .utils import InstructionsEnum
 
-from accelerate import Accelerator
-
 class Server:
-    def __init__(self, config, llm_index, llm_group, llm_master, rl_llm_group, rl_llm_group_size, custom_updater,
+    def __init__(self, rank, name, llm_config, distributed_config, llm_index, llm_group, llm_master_rank, rl_llm_group, rl_llm_group_size, custom_updater,
                  custom_module_functions, custom_model_initializer):
-        self.accelerator = Accelerator()
         assert dist.is_initialized(), "torch distributed must be used!"
+        self.rank = rank
+        self.name = name
         self._index = llm_index  # index of current process in the list of llm processes
-        self._master_server_rank = llm_master
-        self._is_main_server = self.accelerator.process_index == self._master_server_rank
+        self._master_server_rank = llm_master_rank
+        self._is_main_server = self.rank == self._master_server_rank
         self._rl_llm_group = rl_llm_group
         self._rl_llm_group_size = rl_llm_group_size
         self._llm_group = llm_group
         self._llm_group_size = dist.get_world_size(group=self._llm_group)
 
         # Assign devices
-        if config.llm_args.parallelism.use_gpu is False:
+        devices = distributed_config.devices_per_process[self._index]
+        if devices == "cpu":
             use_cpu = True
-            devices = [0]
-            lamorel_logger.info("Using CPU on process {} (index {})".format(self.accelerator.process_index, self._index, devices))
+            lamorel_logger.info("Using CPU on  LLM '{}' index {} (rank {})".format(self.name, self._index, self.rank))
         else:
+            assert all([isinstance(_device, int) for _device in devices])
             use_cpu = False
-            devices = self._compute_current_device_map(config)
-            lamorel_logger.info("Devices on process {} (index {}): {}".format(self.accelerator.process_index, self._index, devices))
-        self._model = HF_LLM(config.llm_args, devices, use_cpu)
-        self._dispatcher = Dispatcher(self._llm_group, self._rl_llm_group_size - 1, self._llm_group_size,
+            lamorel_logger.info("Devices on process LLM '{}' index {} (rank {}): {}".format(self.name, self._index, self.rank, devices))
+
+        model_class = HandlersEnum[llm_config.handler].value
+        self._model = model_class(llm_config, devices, self.rank, use_cpu)
+        self._dispatcher = Dispatcher(self._llm_group, self._rl_llm_group_size, self._llm_group_size,
                                       self._is_main_server, self._master_server_rank, self._index)
 
-        custom_module_functions["__score"] = LogScoringModuleFn(self._model.pad_token, config.llm_args.model_type,
-                                                                config.llm_args.pre_encode_inputs)
+        current_process_config = {
+            "llm": name,
+            "process_index": rank
+        }
+        custom_module_functions["__score"] = ScoreModuleFunction(self._model.pad_token)
         for k, _fn in custom_module_functions.items():
             assert isinstance(_fn, BaseModuleFunction)
-            _fn.device = self._model.device
-            _fn.llm_config = self._model.get_model_config()
+            _fn.device = self._model.main_device
+            _fn.llm_config = llm_config
+            _fn.current_process_config = current_process_config
+            _fn.model_config = self._model.get_model_config()
             _fn.initialize()
         self._model.register_module_functions(custom_module_functions)
 
         if custom_model_initializer is not None:
+            custom_model_initializer.llm_config = llm_config
+            custom_model_initializer.current_process_config = current_process_config
+            custom_model_initializer.model_config = self._model.get_model_config()
             self._model = custom_model_initializer.initialize_model(self._model)
 
         if custom_updater is not None:
             self._updater = custom_updater
-            self._model._ddp_params_and_buffers_to_ignore = [name for name, buffer in self._model.named_buffers() if
-                                                             buffer.dtype == torch.bool]  # This is the trick, you ask DDP to ignore all buffers that are in torch.bool because GLOO doesn't support bool.
+            self._updater.llm_config = llm_config
+            self._updater.current_process_config = current_process_config
+            self._updater.model_config = self._model.get_model_config()
+            if dist.get_backend(group=self._llm_group) == "gloo":
+                lamorel_logger.info(f"Ignoring boolean buffers for DDP on LLM {self.name} (index {self._index}) as GLOO backend is used.")
+                self._model._ddp_params_and_buffers_to_ignore = [name for name, buffer in self._model.named_buffers() if
+                                                                 buffer.dtype == torch.bool]  # This is the trick, you ask DDP to ignore all buffers that are in torch.bool because GLOO doesn't support bool.
+
+            ddp_kwargs = {}
+            if distributed_config.ddp_kwargs is not None:
+                ddp_kwargs.update(distributed_config.ddp_kwargs)
             self._updater.set_llm_module(
-                DDP(self._model, process_group=self._llm_group,
-                    find_unused_parameters=config.allow_subgraph_use_whith_gradient),
+                DDP(self._model, process_group=self._llm_group, **ddp_kwargs)
             )
             assert isinstance(self._updater, BaseUpdater)
         else:
             self._updater = BaseUpdater()
             self._updater.set_llm_module(self._model)
         self.run()
-
-    def _compute_current_device_map(self, config):
-        current_process_index = self.accelerator.process_index
-        # First compute which partition of the local GPUs our current llm process should use
-        n_processes = config.distributed_setup_args.n_rl_processes + config.distributed_setup_args.n_llm_processes
-        process_ids = np.arange(n_processes)
-        machines_processes = np.array_split(process_ids, config.accelerate_args.num_machines)
-        current_machine_id = next(i for i, processes in enumerate(machines_processes)
-                                  if current_process_index in processes)
-        current_machine_processes = list(machines_processes[current_machine_id])
-        n_rl_processes = config.distributed_setup_args.n_rl_processes
-        if current_machine_processes[0] < n_rl_processes:  # It means we're sharing current node with RL process
-            n_shared_rl_processes = len([_p for _p in current_machine_processes if _p < n_rl_processes])
-            _local_llm_index = current_machine_processes.index(current_process_index) - n_shared_rl_processes
-        else:
-            n_shared_rl_processes = 0
-            _local_llm_index = current_machine_processes.index(current_process_index)
-
-        # Compute how to partition local GPUs for local LLMs
-        cuda_device_ids = np.arange(torch.cuda.device_count())
-        processes_devices = np.array_split(cuda_device_ids, len(current_machine_processes) - n_shared_rl_processes)
-        current_process_devices = [device.item() for device in processes_devices[_local_llm_index]]
-        if len(current_process_devices) > config.llm_args.parallelism.model_parallelism_size:
-            lamorel_logger.info(
-                f"{len(current_process_devices)} gpus available for current LLM but using only model_parallelism_size "
-                f"= {config.llm_args.parallelism.model_parallelism_size}")
-            current_process_devices = \
-                current_process_devices[:config.llm_args.parallelism.model_parallelism_size]
-
-        return current_process_devices
 
     def _process_calls(self, calls):
         instruction = calls[0]
@@ -114,19 +101,24 @@ class Server:
                         llm_results.append([self._updater.perform_update(**_call)])
                 return (instruction, llm_results)
         elif instruction == InstructionsEnum.CLOSE:
-            lamorel_logger.info("Closing LLM server process {}".format(self.accelerator.process_index))
+            lamorel_logger.info("Closing server for LLM '{}' index {} (rank {})".format(self.name, self._index, self.rank))
             sys.exit()
         else:
             raise NotImplementedError('Unknown provided instruction.')
 
     def run(self):
-        lamorel_logger.info("Launching LLM server process {}".format(self.accelerator.process_index))
+        if self._is_main_server:
+            lamorel_logger.info(
+                "Launching master server for LLM '{}' index {} (rank {})".format(self.name, self._index, self.rank))
+        else:
+            lamorel_logger.info(
+                "Launching slave server for LLM '{}' index {} (rank {})".format(self.name, self._index, self.rank))
         while True:
             #### Receive calls from RL processes and dispatch them over LLMs ####
-            method_calls = [None for _ in range(self._rl_llm_group_size)]
+            method_calls = [None for _ in range(self._rl_llm_group_size + 1)]
             if self._is_main_server:
                 dist.gather_object(
-                    obj=None, object_gather_list=method_calls, dst=self.accelerator.process_index, group=self._rl_llm_group
+                    obj=None, object_gather_list=method_calls, dst=self.rank, group=self._rl_llm_group
                 )
                 method_calls = method_calls[:-1]  # remove last one coming from current process
                 assert len(set([call["instruction"] for call in method_calls])) <= 1  # check all calls are the same
@@ -135,14 +127,14 @@ class Server:
             if current_process_results[1] is not None:  # expected answer from caller
                 gathered_results = self._dispatcher.gather(current_process_results)
                 if self._is_main_server:
-                    assert len(gathered_results) == self._rl_llm_group_size-1
+                    assert len(gathered_results) == self._rl_llm_group_size
                     if method_calls[0]["instruction"] in [InstructionsEnum.FORWARD, InstructionsEnum.GENERATE]:
                         for idx, _call in enumerate(method_calls):
                             if 'candidates' in _call:
                                 if "__score" in method_calls[0]["module_function_keys"]:
                                     for i in range(len(_call["contexts"])):
                                         assert len(gathered_results[idx][i]["__score"]) == len(_call["candidates"][i])
-                            else: 
+                            else: # enough generations
                                 assert len(_call["contexts"]) == len(gathered_results[idx])
 
                     dist.broadcast_object_list(object_list=gathered_results + [None], src=self._master_server_rank,
