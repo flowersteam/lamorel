@@ -4,31 +4,39 @@ from torch.nn.functional import log_softmax
 import hydra
 import numpy
 
-from transformers import AutoTokenizer
+from lamorel import Caller, BaseModuleFunction
 
-from lamorel import Caller, BaseModuleFunction, lamorel_init
-
-lamorel_init()
 class LogScoringModuleFn(BaseModuleFunction):
-    def __init__(self, model_type, pre_encoded_input):
+    def __init__(self):
         super().__init__()
-        self._model_type = model_type
         self._pad_token = 0
-        self._pre_encoded_input = pre_encoded_input
 
     def initialize(self):
         pass
 
     def forward(self, forward_outputs, minibatch, tokenized_contexts, **kwargs):
-        if self._model_type == "causal":
-            if self._pre_encoded_input:
-                end_of_context_position = 0
-            else:  # hence input should be removed from result
-                end_of_context_position = len(
-                    tokenized_contexts[0]["input_ids"]) # inputs are padded so all of same size
+        if self.llm_config.model_type == "causal":
+            if self.llm_config.pre_encode_inputs:
+                logits = forward_outputs["logits"][:, :-1, :]
+                output_tokens = minibatch["input_ids"][:, 1:]
+            else:  # hence input should be removed from result (and may not be all of same size)
+                end_of_context_positions = [len(_context["input_ids"]) for _context in tokenized_contexts]
+                raw_logits, raw_output_tokens = [], []
+                max_len = 0
+                for i in range(len(tokenized_contexts)):
+                    raw_logits.append(forward_outputs["logits"][i, end_of_context_positions[i]:-1, :])
+                    raw_output_tokens.append(minibatch["input_ids"][i, end_of_context_positions[i]+1:])
+                    if len(raw_output_tokens[-1]) > max_len:
+                        max_len = len(raw_output_tokens[-1])
 
-            logits = forward_outputs["logits"][:, end_of_context_position:-1, :]
-            output_tokens = minibatch["input_ids"][:, end_of_context_position+1:]
+                logits = torch.stack([
+                    torch.nn.functional.pad(torch.tensor(_logits), (0, 0, 0, max_len - len(_logits)), value=0)
+                    for _logits in raw_logits
+                ])
+                output_tokens = torch.stack([
+                    torch.nn.functional.pad(torch.tensor(_tokens), (0, max_len - len(_tokens)), value=self._pad_token)
+                    for _tokens in raw_output_tokens
+                ])
         else:
             logits = forward_outputs["logits"][:, :-1, :]  # skip </s> token appended by tokenizer
             output_tokens = minibatch["decoder_input_ids"][:, 1:]  # skip pad token
@@ -49,7 +57,6 @@ class LogScoringModuleFn(BaseModuleFunction):
         return minibatch_probs.cpu()
 
 lm_server = None
-tokenizer = None
 
 class Seq2SeqLMScoring(unittest.TestCase):
     PROMPTS = ["The capital of France is", "How are you"]
@@ -101,12 +108,12 @@ class Seq2SeqLMScoring(unittest.TestCase):
 
 @hydra.main(config_path='config', config_name='config')
 def main(config_args):
-    global lm_server, tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(config_args.lamorel_args.llm_args.model_path)
+    global lm_server
     lm_server = Caller(config_args.lamorel_args,
                        custom_module_functions={
-                           'score': LogScoringModuleFn(config_args.lamorel_args.llm_args.model_type,
-                                                       config_args.lamorel_args.llm_args.pre_encode_inputs)
+                           "main_llm":{
+                                'score': LogScoringModuleFn()
+                            }
                        })
     causal_lm_scoring_suite = unittest.TestLoader() \
         .loadTestsFromTestCase(Seq2SeqLMScoring)

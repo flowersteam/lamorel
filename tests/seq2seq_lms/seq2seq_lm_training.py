@@ -10,28 +10,27 @@ lamorel_init()
 
 
 class SigmoidOutputModuleFn(BaseModuleFunction):
-    def __init__(self, model_type):
+    def __init__(self):
         super().__init__()
-        self._model_type = model_type
 
     def initialize(self):
-        if 'hidden_size' in self.llm_config.attribute_map:
-            _hidden_size_key = self.llm_config.attribute_map['hidden_size']
+        if 'hidden_size' in self.model_config.attribute_map:
+            _hidden_size_key = self.model_config.attribute_map['hidden_size']
         else:
-            if "word_embed_proj_dim" in self.llm_config.to_dict():
+            if "word_embed_proj_dim" in self.model_config.to_dict():
                 _hidden_size_key = "word_embed_proj_dim"
-            elif "hidden_size" in self.llm_config.to_dict():
+            elif "hidden_size" in self.model_config.to_dict():
                 _hidden_size_key = "hidden_size"
             else:
-                print(self.llm_config.to_dict())
+                print(self.model_config.to_dict())
                 raise NotImplementedError("Unknown hidden size key")
 
-        self._llm_hidden_size = self.llm_config.to_dict()[_hidden_size_key]
-        if "num_hidden_layers" in self.llm_config.attribute_map:
-            hidden_layers_config_key = self.llm_config.attribute_map["num_hidden_layers"]
+        self._llm_hidden_size = self.model_config.to_dict()[_hidden_size_key]
+        if "num_hidden_layers" in self.model_config.attribute_map:
+            hidden_layers_config_key = self.model_config.attribute_map["num_hidden_layers"]
         else:
             hidden_layers_config_key = "num_hidden_layers"
-        self._last_hidden_layer = self.llm_config.to_dict()[hidden_layers_config_key] - 1
+        self._last_hidden_layer = self.model_config.to_dict()[hidden_layers_config_key] - 1
 
         self.head_op = torch.nn.Sequential(
             torch.nn.Linear(self._llm_hidden_size, 64),
@@ -42,7 +41,7 @@ class SigmoidOutputModuleFn(BaseModuleFunction):
 
     def forward(self, forward_outputs, minibatch, tokenized_contexts, **kwargs):
         # Get last layer's hidden from last token in context
-        if self._model_type == "causal":
+        if self.llm_config.model_type == "causal":
             model_head = forward_outputs['hidden_states'][self._last_hidden_layer][:, -1, :]
         else:
             model_head = forward_outputs["decoder_hidden_states"][self._last_hidden_layer + 1][:, 0, :]
@@ -52,10 +51,9 @@ class SigmoidOutputModuleFn(BaseModuleFunction):
 
 
 class BCEUpdater(BaseUpdater):
-    def __init__(self, model_type, minibatch_size, gradient_batch_size, gradient_minibatch_size=None,
+    def __init__(self, minibatch_size, gradient_batch_size, gradient_minibatch_size=None,
                  use_all_params_for_optim=True):
         super(BCEUpdater, self).__init__()
-        self._model_type = model_type
         self._minibatch_size = minibatch_size
         self._gradient_batch_size = gradient_batch_size
         self._gradient_minibatch_size = gradient_minibatch_size
@@ -72,7 +70,7 @@ class BCEUpdater(BaseUpdater):
             self.loss_fn = torch.nn.BCELoss()
 
         if not hasattr(self, 'optimizer'):
-            if self._use_all_params_for_optim:
+            if not self._use_all_params_for_optim:
                 # iterator_trainable_params = self._llm_module.parameters()
                 for param in self._llm_module.module._LLM_model.parameters():
                     param.requires_grad = False
@@ -182,13 +180,12 @@ def main(config_args):
     global lm_server
     # lm server
     lm_server = Caller(config_args.lamorel_args,
-                       custom_updater=BCEUpdater(config_args.lamorel_args.llm_args.model_type,
-                                                 config_args.rl_script_args.minibatch_size,
+                       custom_updater=BCEUpdater(config_args.rl_script_args.minibatch_size,
                                                  config_args.rl_script_args.gradient_batch_size,
                                                  config_args.rl_script_args.gradient_minibatch_size,
                                                  config_args.rl_script_args.use_all_params_for_optim),
                        custom_module_functions={
-                           'sigmoid_output': SigmoidOutputModuleFn(config_args.lamorel_args.llm_args.model_type)
+                           'sigmoid_output': SigmoidOutputModuleFn()
                        })
     causal_lm_training_suite = unittest.TestLoader() \
         .loadTestsFromTestCase(Seq2SeqTraining)
