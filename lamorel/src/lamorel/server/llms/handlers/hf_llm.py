@@ -103,6 +103,11 @@ class HF_LLM(BaseLLM):
     def get_model_config(self):
         return self._LLM_model.config
 
+    def get_additional_llm_config(self):
+        return {
+            "pad_token": self.pad_token
+        }
+
     def register_module_functions(self, module_functions):
         self._module_functions = torch.nn.ModuleDict(module_functions)
 

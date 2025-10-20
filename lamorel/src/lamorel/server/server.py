@@ -2,7 +2,8 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch
 import sys
-import numpy as np
+from omegaconf import OmegaConf
+import copy
 
 import logging
 lamorel_logger = logging.getLogger('lamorel_logger')
@@ -46,25 +47,28 @@ class Server:
             "llm": name,
             "process_index": rank
         }
+        _llm_copy_to_pass = copy.copy(llm_config)
+        for __k, __v in self._model.get_additional_llm_config().items():
+            OmegaConf.update(_llm_copy_to_pass, __k, __v, force_add=True)
         custom_module_functions["__score"] = ScoreModuleFunction(self._model.pad_token)
         for k, _fn in custom_module_functions.items():
             assert isinstance(_fn, BaseModuleFunction)
             _fn.device = self._model.main_device
-            _fn.llm_config = llm_config
+            _fn.llm_config = _llm_copy_to_pass
             _fn.current_process_config = current_process_config
             _fn.model_config = self._model.get_model_config()
             _fn.initialize()
         self._model.register_module_functions(custom_module_functions)
 
         if custom_model_initializer is not None:
-            custom_model_initializer.llm_config = llm_config
+            custom_model_initializer.llm_config = _llm_copy_to_pass
             custom_model_initializer.current_process_config = current_process_config
             custom_model_initializer.model_config = self._model.get_model_config()
             self._model = custom_model_initializer.initialize_model(self._model)
 
         if custom_updater is not None:
             self._updater = custom_updater
-            self._updater.llm_config = llm_config
+            self._updater.llm_config = _llm_copy_to_pass
             self._updater.current_process_config = current_process_config
             self._updater.model_config = self._model.get_model_config()
             if dist.get_backend(group=self._llm_group) == "gloo":

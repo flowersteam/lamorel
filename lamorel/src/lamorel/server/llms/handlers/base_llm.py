@@ -22,5 +22,8 @@ class BaseLLM(torch.nn.Module):
     def get_model_config(self):
         raise NotImplementedError()
 
+    def get_additional_llm_config(self):
+        raise NotImplementedError()
+
     def forward(self, module_function_keys, contexts, candidates=None, require_grad=False, **kwargs):
         raise NotImplementedError()
