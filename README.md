@@ -4,6 +4,14 @@
 
 ---
 ## ** *News* **
+- **2025/10/20 - V0.3 in beta**:
+  - A new version of lamorel (V0.3 ) is available in beta on the branch [V0.3](https://github.com/flowersteam/lamorel/tree/v0.3)
+  - It introduces important changes such as:
+    - lamorel can now deploy *multiple and different* LLMs within the same experiment
+    - an [unsloth](https://unsloth.ai/) backend has been introduced
+    - more control on the distributed setup from the config, including which GPU each process can use
+    - lamorel now directly relies on torch.distributed instead of Accelerate
+  - Don't hesitate to test it and report any issue!
 - **2023/11/21 - V0.2**: 
   - The support of Decoder-Only models has been largely improved.
   - Optimizations:
