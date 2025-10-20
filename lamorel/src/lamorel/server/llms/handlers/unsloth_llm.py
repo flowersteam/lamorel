@@ -47,7 +47,7 @@ class UnslothLLM(HF_LLM):
             "Unsloth fast generation is currently disabled as it breaks gradient checkpointing for training with DDP.")
         generations = []
         encoded_inputs = self._LLM_tokenizer(contexts, return_tensors='pt', padding=True, truncation=False,
-                                             add_special_tokens=False).to(self.device)
+                                             add_special_tokens=False).to(self.main_device)
 
         # Don't use fast generate for now as it breaks gradient checkpointing for training with DDP
         # Hence took code from here: https://github.com/unslothai/unsloth/blob/8a055402a27c3d9643cc16947ce40311a280e69c/unsloth/models/llama.py#L1537
