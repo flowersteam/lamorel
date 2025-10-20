@@ -23,7 +23,6 @@ from lamorel import Caller, BaseModuleFunction, BaseModelInitializer
 class LogScoringModuleFn(BaseModuleFunction):
     def __init__(self):
         super().__init__()
-        self._pad_token = 0
 
     def initialize(self):
         pass
@@ -52,7 +51,7 @@ class LogScoringModuleFn(BaseModuleFunction):
                         for _logits in raw_logits
                     ])
                     output_tokens = torch.stack([
-                        torch.nn.functional.pad(torch.tensor(_tokens), (0, max_len - len(_tokens)), value=self._pad_token)
+                        torch.nn.functional.pad(torch.tensor(_tokens), (0, max_len - len(_tokens)), value=self.llm_config.pad_token)
                         for _tokens in raw_output_tokens
                     ])
         else:
@@ -67,7 +66,7 @@ class LogScoringModuleFn(BaseModuleFunction):
         mask = torch.ones(tokens_logprobs.shape, dtype=torch.bool, device=self.device)
         for i, _output in enumerate(output_tokens):
             for j, _token in enumerate(_output):
-                if _token != self._pad_token:
+                if _token != self.llm_config.pad_token:
                     mask[i, j] = False
         masked_token_probs = tokens_logprobs.masked_fill(mask, 0.0)  # apply mask
         minibatch_probs = masked_token_probs.sum(-1)  # compute final sequences' probability

@@ -54,7 +54,7 @@ class ValueHeadModuleFn(BaseModuleFunction):
     def initialize(self):
         llm_hidden_size = self.model_config.to_dict()['hidden_size']
         self.value_head_op = torch.nn.Sequential(
-            torch.nn.Linear(self._llm_hidden_size, 1024),
+            torch.nn.Linear(llm_hidden_size, 1024),
             torch.nn.Sigmoid(),
             torch.nn.Linear(1024, 1024),
             torch.nn.Sigmoid(),

@@ -1,12 +1,17 @@
+import os
+visible_device = str(max(0, int(os.environ.get("RANK")) - 1))
+print(f"Setting visible devices to be: {visible_device}")
+os.environ['CUDA_VISIBLE_DEVICES'] = visible_device
+os.environ["UNSLOTH_DISABLE_STATISTICS"] = "0"
+
 import unittest
 import hydra
 import torch
 import numpy as np
 import math
 
-from lamorel import Caller, lamorel_init
+from lamorel import Caller
 from lamorel import BaseUpdater, BaseModuleFunction
-lamorel_init()
 
 
 class SigmoidOutputModuleFn(BaseModuleFunction):
@@ -14,18 +19,7 @@ class SigmoidOutputModuleFn(BaseModuleFunction):
         super().__init__()
 
     def initialize(self):
-        if 'hidden_size' in self.model_config.attribute_map:
-            _hidden_size_key = self.model_config.attribute_map['hidden_size']
-        else:
-            if "word_embed_proj_dim" in self.model_config.to_dict():
-                _hidden_size_key = "word_embed_proj_dim"
-            elif "hidden_size" in self.model_config.to_dict():
-                _hidden_size_key = "hidden_size"
-            else:
-                print(self.model_config.to_dict())
-                raise NotImplementedError("Unknown hidden size key")
-
-        self._llm_hidden_size = self.model_config.to_dict()[_hidden_size_key]
+        llm_hidden_size = self.model_config.to_dict()['hidden_size']
         if "num_hidden_layers" in self.model_config.attribute_map:
             hidden_layers_config_key = self.model_config.attribute_map["num_hidden_layers"]
         else:
@@ -33,7 +27,7 @@ class SigmoidOutputModuleFn(BaseModuleFunction):
         self._last_hidden_layer = self.model_config.to_dict()[hidden_layers_config_key] - 1
 
         self.head_op = torch.nn.Sequential(
-            torch.nn.Linear(self._llm_hidden_size, 64),
+            torch.nn.Linear(llm_hidden_size, 64),
             torch.nn.Sigmoid(),
             torch.nn.Linear(64, 1),
             torch.nn.Sigmoid()
@@ -82,7 +76,7 @@ class BCEUpdater(BaseUpdater):
 
         current_process_buffer = {}
         for k in ['labels']:
-            current_process_buffer[k] = kwargs[k][_current_batch_ids]
+            current_process_buffer[k] = kwargs[k][_current_batch_ids["contexts"]]
 
         losses = []
         n_minibatches = math.ceil(len(contexts) / self._minibatch_size)
@@ -180,13 +174,13 @@ def main(config_args):
     global lm_server
     # lm server
     lm_server = Caller(config_args.lamorel_args,
-                       custom_updater=BCEUpdater(config_args.rl_script_args.minibatch_size,
+                       custom_updater={"main_llm": BCEUpdater(config_args.rl_script_args.minibatch_size,
                                                  config_args.rl_script_args.gradient_batch_size,
                                                  config_args.rl_script_args.gradient_minibatch_size,
-                                                 config_args.rl_script_args.use_all_params_for_optim),
-                       custom_module_functions={
+                                                 config_args.rl_script_args.use_all_params_for_optim)},
+                       custom_module_functions={"main_llm": {
                            'sigmoid_output': SigmoidOutputModuleFn()
-                       })
+                       }})
     causal_lm_training_suite = unittest.TestLoader() \
         .loadTestsFromTestCase(Seq2SeqTraining)
     runner = unittest.TextTestRunner()
