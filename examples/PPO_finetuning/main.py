@@ -2,6 +2,11 @@
 PPO implementation taken from https://github.com/openai/spinningup
 '''
 
+import os
+visible_device = str(max(0, int(os.environ.get("RANK")) - 1))
+print(f"Setting visible devices to be: {visible_device}")
+os.environ['CUDA_VISIBLE_DEVICES'] = visible_device
+
 from collections import OrderedDict
 
 import hydra
@@ -16,7 +21,6 @@ from tqdm import tqdm
 import time
 import pickle
 import math
-import os
 import functools as f
 from operator import add
 
@@ -24,27 +28,19 @@ from transformers import set_seed
 
 from babyai_text_env import BabyAITextEnv
 
-from lamorel import Caller, lamorel_init
+from lamorel import Caller
 from lamorel import BaseUpdater, BaseModuleFunction, BaseModelInitializer
 
-lamorel_init()
-
-from accelerate import Accelerator
-accelerator = Accelerator()
-
 class LogScoringModuleFn(BaseModuleFunction):
-    def __init__(self, model_type, pre_encoded_input):
+    def __init__(self):
         super().__init__()
-        self._model_type = model_type
-        self._pad_token = 0
-        self._pre_encoded_input = pre_encoded_input
 
     def initialize(self):
         pass
 
     def forward(self, forward_outputs, minibatch, tokenized_contexts, **kwargs):
-        if self._model_type == "causal":
-            if self._pre_encoded_input:
+        if self.llm_config.model_type == "causal":
+            if self.llm_config.pre_encoded_input:
                 end_of_context_position = 0
             else:  # hence input should be removed from result
                 end_of_context_position = len(
@@ -64,7 +60,7 @@ class LogScoringModuleFn(BaseModuleFunction):
         mask = torch.ones(tokens_logprobs.shape, dtype=torch.bool, device=self.device)
         for i, _output in enumerate(output_tokens):
             for j, _token in enumerate(_output):
-                if _token != self._pad_token:
+                if _token != self.llm_config.pad_token:
                     mask[i, j] = False
         masked_token_logprobs = tokens_logprobs.masked_fill(mask, 0.0)  # apply mask
         minibatch_logprobs = masked_token_logprobs.sum(-1)  # compute final sequences' log-probabilities
@@ -72,24 +68,11 @@ class LogScoringModuleFn(BaseModuleFunction):
         return minibatch_logprobs.cpu()
 
 class ValueHeadModuleFn(BaseModuleFunction):
-    def __init__(self, model_type, pre_encoded_input):
+    def __init__(self):
         super().__init__()
-        self._model_type = model_type
-        self._pre_encoded_input = pre_encoded_input
 
     def initialize(self):
-        if 'hidden_size' in self.llm_config.attribute_map:
-            _hidden_size_key = self.llm_config.attribute_map['hidden_size']
-        else:
-            if "word_embed_proj_dim" in self.llm_config.to_dict():
-                _hidden_size_key = "word_embed_proj_dim"
-            elif "hidden_size" in self.llm_config.to_dict():
-                _hidden_size_key = "hidden_size"
-            else:
-                print(self.llm_config.to_dict())
-                raise NotImplementedError("Unknown hidden size key")
-
-        self._llm_hidden_size = self.llm_config.to_dict()[_hidden_size_key]
+        self._llm_hidden_size = self.model_config.to_dict()['hidden_size']
         self.value_head_op = torch.nn.Sequential(
             torch.nn.Linear(self._llm_hidden_size, 1024),
             torch.nn.Sigmoid(),
@@ -100,8 +83,8 @@ class ValueHeadModuleFn(BaseModuleFunction):
 
     def forward(self, forward_outputs, minibatch, tokenized_contexts, **kwargs):
         # Get last layer's hidden from last token in context
-        if self._model_type == "causal":
-            if self._pre_encoded_input:
+        if self.llm_config.model_type == "causal":
+            if self.llm_config.pre_encoded_input:
                 end_of_context_position = 0
             else:  # hence input should be removed from result
                 end_of_context_position = len(
@@ -146,7 +129,7 @@ class PPOUpdater(BaseUpdater):
 
         current_process_buffer = {}
         for k in ['actions', 'advantages', 'returns', 'logprobs', 'values']:
-            current_process_buffer[k] = kwargs[k][_current_batch_ids]
+            current_process_buffer[k] = kwargs[k][_current_batch_ids["contexts"]]
 
         epochs_losses = {
             "value": [],
@@ -215,7 +198,7 @@ class PPOUpdater(BaseUpdater):
                 torch.nn.utils.clip_grad_norm_(self._iterator_trainable_params, kwargs["max_grad_norm"])
                 self.optimizer.step()
 
-        if kwargs["save_after_update"] and accelerator.process_index == 1:
+        if kwargs["save_after_update"] and os.environ["RANK"] == 1:
             print("Saving model...")
             model_state_dict = OrderedDict({
                     k: v for k, v in self._iterator_named_trainable_params()
@@ -253,16 +236,14 @@ def main(config_args):
 
     # Create LLM agent
     lm_server = Caller(config_args.lamorel_args,
-                       custom_updater=PPOUpdater(config_args.lamorel_args.llm_args.model_type,
+                       custom_updater={"main_llm": PPOUpdater(config_args.lamorel_args.llm_args.model_type,
                                                  config_args.rl_script_args.minibatch_size,
-                                                 config_args.rl_script_args.gradient_batch_size),
-                       custom_model_initializer=WeightsLoaderInitializer(config_args.rl_script_args.loading_path),
-                       custom_module_functions={
-                           'score': LogScoringModuleFn(config_args.lamorel_args.llm_args.model_type,
-                                                       config_args.lamorel_args.llm_args.pre_encode_inputs),
-                           'value': ValueHeadModuleFn(config_args.lamorel_args.llm_args.model_type,
-                                                      config_args.lamorel_args.llm_args.pre_encode_inputs)
-                       })
+                                                 config_args.rl_script_args.gradient_batch_size)},
+                       custom_model_initializer={"main_llm": WeightsLoaderInitializer(config_args.rl_script_args.loading_path)},
+                       custom_module_functions={"main_llm": {
+                           'score': LogScoringModuleFn(),
+                           'value': ValueHeadModuleFn()
+                       }})
 
     # Set up experience buffer
     buffers = [

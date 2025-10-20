@@ -2,6 +2,10 @@
   Code taken from https://github.com/google-research/google-research/blob/master/saycan/SayCan-Robot-Pick-Place.ipynb
   Licensed under Apache 2.0 license
 '''
+import os
+visible_device = str(max(0, int(os.environ.get("RANK")) - 1))
+print(f"Setting visible devices to be: {visible_device}")
+os.environ['CUDA_VISIBLE_DEVICES'] = visible_device
 
 from environment import PickPlaceEnv, PICK_TARGETS, PLACE_TARGETS
 from utils.env_to_text_utils import get_possible_actions, build_scene_description, get_env_action_from_command, get_available_objects
@@ -12,14 +16,13 @@ import hydra
 import numpy as np
 import matplotlib.pyplot as plt
 
-from lamorel import Caller, lamorel_init
-lamorel_init()
+from lamorel import Caller
 
 
 def affordance_scoring(options, found_objects, verbose=False, block_name="box", bowl_name="circle",
                        termination_string="done()"):
     '''
-    Given this environment does not have RL-trained policies or an asscociated value function, we use affordances through an object detector.
+    Given this environment does not have RL-trained policies or an associated value function, we use affordances through an object detector.
     '''
     affordance_scores = {}
     found_objects = [

@@ -2,6 +2,11 @@
 PPO implementation taken from https://github.com/openai/spinningup
 '''
 
+import os
+visible_device = str(max(0, int(os.environ.get("RANK")) - 1))
+print(f"Setting visible devices to be: {visible_device}")
+os.environ['CUDA_VISIBLE_DEVICES'] = visible_device
+
 from collections import OrderedDict
 from typing import List
 
@@ -10,38 +15,30 @@ from utils.ppo_buffer import PPOBuffer
 import torch
 from torch.nn.functional import log_softmax
 import numpy as np
-import logging
 
 from tqdm import tqdm
 import time
 import pickle
 import math
-import os
 
 from transformers import set_seed, top_k_top_p_filtering, AutoTokenizer
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 
 from repeat_env import RepeatEnv
 
-from lamorel import Caller, lamorel_init
+from lamorel import Caller
 from lamorel import BaseUpdater, BaseModuleFunction, BaseModelInitializer
 
-lamorel_init()
-
-from accelerate import Accelerator
-
 class LMLogitsModuleFn(BaseModuleFunction):
-    def __init__(self, model_type):
+    def __init__(self):
         super().__init__()
-        self._model_type = model_type
-        self._pad_token = 0
 
     def initialize(self):
         pass
 
     def forward(self, forward_outputs, minibatch, tokenized_contexts, **kwargs):
         # Get last layer's logits from last token in context
-        if self._model_type == "causal":
+        if self.llm_config.model_type == "causal":
             logits = forward_outputs["logits"][:, -1, :]
         else:
             logits = forward_outputs["logits"][:, 0, :]  # skip </s> token appended by tokenizer
@@ -51,23 +48,11 @@ class LMLogitsModuleFn(BaseModuleFunction):
 
 
 class ValueHeadModuleFn(BaseModuleFunction):
-    def __init__(self, model_type):
+    def __init__(self):
         super().__init__()
-        self._model_type = model_type
 
     def initialize(self):
-        if 'hidden_size' in self.llm_config.attribute_map:
-            _hidden_size_key = self.llm_config.attribute_map['hidden_size']
-        else:
-            if "word_embed_proj_dim" in self.llm_config.to_dict():
-                _hidden_size_key = "word_embed_proj_dim"
-            elif "hidden_size" in self.llm_config.to_dict():
-                _hidden_size_key = "hidden_size"
-            else:
-                print(self.llm_config.to_dict())
-                raise NotImplementedError("Unknown hidden size key")
-
-        self._llm_hidden_size = self.llm_config.to_dict()[_hidden_size_key]
+        llm_hidden_size = self.model_config.to_dict()['hidden_size']
         self.value_head_op = torch.nn.Sequential(
             torch.nn.Linear(self._llm_hidden_size, 1024),
             torch.nn.Sigmoid(),
@@ -78,7 +63,7 @@ class ValueHeadModuleFn(BaseModuleFunction):
 
     def forward(self, forward_outputs, minibatch, tokenized_contexts, **kwargs):
         # Get last layer's hidden from last token in context
-        if self._model_type == "causal":
+        if self.llm_config.model_type == "causal":
             model_head = forward_outputs['hidden_states'][-1][:, -1, :]
         else:
             model_head = forward_outputs["decoder_hidden_states"][-1][:, 0, :]
@@ -212,7 +197,7 @@ class PPOUpdater(BaseUpdater):
 
         current_process_buffer = {}
         for k in ['actions', 'advantages', 'returns', 'logprobs', 'values']:
-            current_process_buffer[k] = kwargs[k][_current_batch_ids]
+            current_process_buffer[k] = kwargs[k][_current_batch_ids["contexts"]]
 
         longest_candidate = max([len(_c) for _c in candidates])
         epochs_losses = {
@@ -311,7 +296,7 @@ class PPOUpdater(BaseUpdater):
                 torch.nn.utils.clip_grad_norm_(iterator_trainable_params, kwargs["max_grad_norm"])
                 self.optimizer.step()
 
-        if kwargs["save_after_update"] and self._accelerator.process_index == 1:
+        if kwargs["save_after_update"] and self._os.environ["RANK"] == 1:
             print("Saving model...")
             model_state_dict = OrderedDict({
                 k: v for k, v in iterator_named_trainable_params()
@@ -349,10 +334,10 @@ def main(config_args):
 
     # Create LLM agent
     lm_server = Caller(config_args.lamorel_args,
-                       custom_updater=PPOUpdater(config_args.lamorel_args.llm_args.model_type,
+                       custom_updater={"main_llm": PPOUpdater(config_args.lamorel_args.llm_args.model_type,
                                                  config_args.rl_script_args.minibatch_size,
-                                                 config_args.rl_script_args.gradient_batch_size),
-                       custom_model_initializer=SequentialInitializer([
+                                                 config_args.rl_script_args.gradient_batch_size)},
+                       custom_model_initializer={"main_llm": SequentialInitializer([
                            PeftInitializer(config_args.lamorel_args.llm_args.model_type,
                                            config_args.lamorel_args.llm_args.model_path,
                                            config_args.rl_script_args.use_lora,
@@ -361,15 +346,11 @@ def main(config_args):
                                            config_args.rl_script_args.lora_alpha,
                                            config_args.lamorel_args.llm_args.pre_encode_inputs),
                            WeightsLoaderInitializer(config_args.rl_script_args.loading_path)
-                       ]),
-                       custom_module_functions={
-                           'lm_head': LMLogitsModuleFn(
-                                config_args.lamorel_args.llm_args.model_type
-                            ),
-                            'value': ValueHeadModuleFn(
-                                config_args.lamorel_args.llm_args.model_type
-                            )
-                       })
+                       ])},
+                       custom_module_functions={"main_llm": {
+                           'lm_head': LMLogitsModuleFn(),
+                            'value': ValueHeadModuleFn()
+                       }})
 
     # Set up experience buffer
     buffer = PPOBuffer(config_args.rl_script_args.steps_per_epoch, config_args.rl_script_args.gamma,
