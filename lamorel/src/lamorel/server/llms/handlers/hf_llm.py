@@ -242,7 +242,9 @@ class HF_LLM(BaseLLM):
 
         generations = []
         encoded_inputs = self._LLM_tokenizer(contexts, return_tensors='pt', padding=True, truncation=False,
-                                             add_special_tokens=False).to(self.main_device)
+                                             add_special_tokens=False,
+                                             padding_side='left' if self.model_type == "causal" else 'right'
+                                             ).to(self.main_device)
         results = self._LLM_model.generate(
             input_ids=encoded_inputs["input_ids"],
             attention_mask=encoded_inputs["attention_mask"],
