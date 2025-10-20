@@ -10,6 +10,8 @@ os.environ['CUDA_VISIBLE_DEVICES'] = visible_device
 from collections import OrderedDict
 from typing import List
 
+from unsloth import FastLanguageModel
+
 import hydra
 from utils.ppo_buffer import PPOBuffer
 from utils.generate_prompt import generate_prompt
@@ -26,6 +28,7 @@ import functools as f
 from operator import add
 
 from transformers import set_seed
+from peft.utils import TRANSFORMERS_MODELS_TO_LORA_TARGET_MODULES_MAPPING
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 
 from babyai_text_env import BabyAITextEnv
@@ -124,15 +127,15 @@ class WeightsLoaderInitializer(BaseModelInitializer):
         return model
 
 class PeftInitializer(BaseModelInitializer):
-    def __init__(self, model_type, model_name, use_lora, use_4bit, r, alpha, use_cache=True):
+    def __init__(self, use_unsloth, use_lora, use_4bit, r, alpha, use_cache=True, gpu_type="nvidia"):
         super().__init__()
-        self._model_type = model_type
-        self._model_name = model_name
+        self._use_unsloth = use_unsloth
         self._use_lora = use_lora
         self._use_4bit = use_4bit
         self._r = r
         self._alpha = alpha
         self._use_cache = use_cache
+        self._gpu_type = gpu_type
 
     def _print_trainable_parameters(self, model):
         """
@@ -147,41 +150,39 @@ class PeftInitializer(BaseModelInitializer):
         print(
             f"trainable params: {trainable_params} || all params: {all_param} || trainable%: {100 * trainable_params / all_param}"
         )
-
-    def _get_model_config(self):
-        if "t5" in self._model_name:
-            return LoraConfig(
-                r=self._r,
-                lora_alpha=self._alpha,
-                target_modules=["q", "v"],
-                lora_dropout=0.0,
-                bias="none",
-                task_type="SEQ_2_SEQ_LM"
-            )
-        elif "opt" in self._model_name or "Llama" in self._model_name or "Mistral" in self._model_name:
-            return LoraConfig(
-                r=self._r,
-                lora_alpha=self._alpha,
-                target_modules=["q_proj", "v_proj"],
-                lora_dropout=0.0,
-                bias="none",
-                task_type="CAUSAL_LM"
-            )
-        else:
-            raise NotImplementedError()
-
     def initialize_model(self, model):
         if self._use_lora:
             llm_module = model._modules['_LLM_model']
-            if self._model_type == "seq2seq" or not self._use_cache:
-                llm_module.gradient_checkpointing_enable()  # reduce number of stored activations
+            target_modules = TRANSFORMERS_MODELS_TO_LORA_TARGET_MODULES_MAPPING[llm_module.config.model_type]
 
-            if self._use_4bit:
-                llm_module = prepare_model_for_kbit_training(llm_module)
+            config = LoraConfig(
+                r=self._r,
+                lora_alpha=self._alpha,
+                target_modules=target_modules,
+                lora_dropout=0,
+                bias="none"
+            )
+            if self._use_unsloth:
+                print("Setting adapters for unsloth model")
+                unsloth_peft_config = config.to_dict()
+                del unsloth_peft_config["task_type"]
+                # Init adapters #
+                peft_model = FastLanguageModel.get_peft_model(
+                    llm_module,
+                    **unsloth_peft_config,
+                    use_gradient_checkpointing="unsloth" if not self._use_cache else False
+                )
+            else:
+                print("Setting adapters for transformers model")
+                if not self._use_cache and self._gpu_type == "nvidia":
+                    llm_module.gradient_checkpointing_enable()  # reduce number of stored activations
 
-            # Init adapters #
-            config = self._get_model_config()
-            peft_model = get_peft_model(llm_module, config)
+                if self._use_4bit:
+                    llm_module = prepare_model_for_kbit_training(llm_module)
+
+                peft_model = get_peft_model(llm_module, config)
+                peft_model.config.use_cache = self._use_cache
+
             parent_module_device = None
             for name, param in peft_model.named_modules():
                 if name.split(".")[-1].startswith("lora_"):
@@ -195,7 +196,6 @@ class PeftInitializer(BaseModelInitializer):
 
             model._modules['_LLM_model'] = peft_model
 
-        model.eval()  # Important to ensure ratios are 1 in first minibatch of PPO (i.e. no dropout)
         model._modules['_LLM_model'].config.use_cache = self._use_cache
         self._print_trainable_parameters(model)
         return model
@@ -203,7 +203,6 @@ class PeftInitializer(BaseModelInitializer):
 class PPOUpdater(BaseUpdater):
     def __init__(self, model_type, minibatch_size, gradient_batch_size, gradient_minibatch_size=None):
         super(PPOUpdater, self).__init__()
-        self._model_type = model_type
         self._minibatch_size = minibatch_size
         self._gradient_batch_size = gradient_batch_size
         self._gradient_minibatch_size = gradient_minibatch_size
@@ -332,17 +331,18 @@ def main(config_args):
 
     # Create LLM agent
     lm_server = Caller(config_args.lamorel_args,
-                       custom_updater={"main_llm": PPOUpdater(config_args.lamorel_args.llm_args.model_type,
+                       custom_updater={"main_llm": PPOUpdater(
                                                  config_args.rl_script_args.minibatch_size,
                                                  config_args.rl_script_args.gradient_batch_size)},
                        custom_model_initializer={"main_llm": SequentialInitializer([
-                           PeftInitializer(config_args.lamorel_args.llm_args.model_type,
-                                           config_args.lamorel_args.llm_args.model_path,
-                                           config_args.rl_script_args.use_lora,
-                                           config_args.lamorel_args.llm_args.load_in_4bit,
-                                           config_args.rl_script_args.lora_r,
-                                           config_args.rl_script_args.lora_alpha,
-                                           config_args.lamorel_args.llm_args.pre_encode_inputs),
+                           PeftInitializer(
+                               config_args.lamorel_args.llm_configs.main_llm.handler == "unsloth",
+                               config_args.rl_script_args.use_lora,
+                               config_args.lamorel_args.llm_configs.main_llm.load_in_4bit,
+                               config_args.rl_script_args.lora_r,
+                               config_args.rl_script_args.lora_alpha,
+                               config_args.lamorel_args.llm_configs.main_llm.pre_encode_inputs,
+                               config_args.rl_script_args.gpu_type),
                            WeightsLoaderInitializer(config_args.rl_script_args.loading_path)
                        ])},
                        custom_module_functions={"main_llm": {
