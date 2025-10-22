@@ -4,7 +4,7 @@ setup(
     name='lamorel',
     packages=find_packages("src"),
     package_dir={"": "src"},
-    version="0.1",
+    version="0.3",
     install_requires=[
         'transformers>=4.35',
         'accelerate>=0.24.1',
@@ -12,8 +12,8 @@ setup(
         'torch>=2.1.0'
     ],
     extras_require={
-        'quantization':  ["bitsandbytes>=0.41.1"]
+        'unsloth':  ["unsloth"]
     },
-    description="",
-    author=""
+    description="Lamorel is a Python library designed for people eager to use Large Language Models (LLMs) in interactive environments (e.g. RL setups).",
+    author="Clément Romac"
 )

@@ -1,7 +1,18 @@
 ## Tutorial to use unsloth models
 TODO list:
 - [ ] Install unsloth `pip install unsloth`
-- [ ] Disable statistics on top of your entry point `os.environ["UNSLOTH_DISABLE_STATISTICS"] = "0"`
+- [ ] Modify the beginning of your entrypoint:
+    ```python
+            import os
+            import shutil
+            os.environ["UNSLOTH_DISABLE_STATISTICS"] = "0"
+            working_dir = os.getcwd() + "/rank_" + os.environ.get("RANK")
+            if os.path.exists(working_dir):
+                shutil.rmtree(working_dir)
+            os.makedirs(working_dir)
+            os.chdir(working_dir)
+            os.environ["TMPDIR"] = working_dir
+    ```
 - [ ] Handle unsloth models in your initializers, for instance with LoRA:
     ```python
             if self._use_unsloth:
