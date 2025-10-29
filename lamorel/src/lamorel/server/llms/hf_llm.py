@@ -218,9 +218,11 @@ class HF_LLM(BaseLLM):
     def generate(self, contexts, return_logprobs=False, **kwargs):
         generations = []
 
-        self._LLM_tokenizer.pad_token = self._LLM_tokenizer.eos_token
-
-        encoded_inputs = self._LLM_tokenizer(contexts, return_tensors='pt', padding=True, truncation=False,add_special_tokens=True).to(self.device)
+        self._LLM_tokenizer.pad_token = self.pad_token
+        encoded_inputs = self._LLM_tokenizer(contexts, return_tensors='pt', padding=True, truncation=False,
+                                             add_special_tokens=False,
+                                             padding_side='left' if self.model_type == "causal" else 'right'
+                                             ).to(self.device)
 
         results = self._LLM_model.generate(
             input_ids=encoded_inputs["input_ids"],
