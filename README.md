@@ -4,6 +4,7 @@
 
 ---
 ## ** *News* **
+- **2025/12/11 - Benchmark**: We benchmarked lamorel's inference efficiency agains transformers and vLLM. Find the results in our [wiki](https://github.com/flowersteam/lamorel/wiki/Benchmarking-lamorel's-inference-efficiency).
 - **2025/10/20 - V0.3 in beta**:
   - A new version of lamorel (V0.3 ) is available in beta on the branch [V0.3](https://github.com/flowersteam/lamorel/tree/v0.3)
   - It introduces important changes such as:
